@@ -124,7 +124,9 @@ export class Simulator {
     const tile = { kind: 'BLE', mac: randomMac(), name: '', mfg: [], uuids: ['FEED'], svcData: [{ uuid: 'FEED', dataHex: '02' + hexBytes(8) }], vendorIe: [] }
     const watch = { kind: 'BLE', mac: randomMac(), name: 'Galaxy Watch6', mfg: [{ companyId: 117, dataHex: '0142' + hexBytes(6) }], uuids: [], svcData: [], vendorIe: [] }
     const hotspot = { kind: 'WIFI', mac: macFrom('A2' + hexBytes(2)), name: 'iPhone', mfg: [], uuids: [], svcData: [], vendorIe: [], channel: 6, freq: 2437, security: 'WPA2-PSK' }
-    this._companions = [tile, watch, hotspot].map((d) => ({ ...d, baseRssi: rnd(-62, -48), life: Infinity, age: 0, drift: 0, channel: d.channel || 0, freq: d.freq || 2402, security: d.security || '', companion: true }))
+    // An AirTag-style Find My accessory separated from its owner (Apple type 0x12), riding along.
+    const findMy = { kind: 'BLE', mac: randomMac(), name: '', mfg: [{ companyId: 76, dataHex: '1219' + hexBytes(25) }], uuids: [], svcData: [], vendorIe: [] }
+    this._companions = [tile, watch, hotspot, findMy].map((d) => ({ ...d, baseRssi: rnd(-62, -48), life: Infinity, age: 0, drift: 0, channel: d.channel || 0, freq: d.freq || 2402, security: d.security || '', companion: true }))
     return this._companions
   }
 
@@ -152,6 +154,8 @@ export class Simulator {
       burst = Array.from({ length: 18 }, () => ({ kind: 'BLE', mac: randomMac(), name: '', mfg: [{ companyId: 76, dataHex: '0719' + hexBytes(10) }], uuids: [], svcData: [], vendorIe: [], baseRssi: level, life: 6, age: 0, drift: 0, channel: 0, freq: 2402, security: '', flood: true }))
       this.pool.push(...burst)
     }
+    const fm = this.companions()[3]
+    if (this.t % 90 < 1) fm.mac = randomMac()
     const out = []
     for (const d of [...this.pool, ...this.companions()]) {
       // Wi-Fi APs are scanned roughly every few seconds; BLE advertises constantly.

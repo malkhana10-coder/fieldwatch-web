@@ -4,6 +4,14 @@ import { describeRule, PALETTE } from '../engine/catalog.js'
 import { download, pickFile } from '../engine/storage.js'
 import { CLASSES } from '../i18n.js'
 
+const PACKS = [
+  { id: 'tracking', icon: 'tag', classes: ['FINDER', 'HACKING'] },
+  { id: 'room', icon: 'camera', classes: ['CAMERA', 'SURVEILLANCE', 'GLASSES', 'WEARABLE', 'FINDER'], attentionOnly: true },
+  { id: 'meeting', icon: 'shield', classes: ['GLASSES', 'WEARABLE', 'HACKING', 'CAMERA'], attentionOnly: true },
+  { id: 'vehicle', icon: 'car', classes: ['FINDER', 'HACKING'] },
+  { id: 'drones', icon: 'drone', classes: ['DRONE'] },
+]
+
 const RULE_KINDS = ['OUI', 'MAC_PREFIX', 'NAME_GLOB', 'NAME_CONTAINS', 'SERVICE_UUID', 'SERVICE_DATA', 'MANUFACTURER_ID', 'MANUFACTURER_DATA', 'VENDOR_IE_OUI', 'HIDDEN_SSID']
 
 export function SignatureEditor({ fleet, isNew, onClose }) {
@@ -103,6 +111,21 @@ export function Signatures() {
             try { const n = e.importSignatures(file.text); e.toast(t('imported', { n })) } catch (err) { e.toast(t('importFailed', { e: err.message }), 'warn') }
           }}><Icon name="upload" size={15} />{t('importSigs')}</button>
           <button className="btn" onClick={() => download('fieldwatch-signatures.json', e.exportSignatures(), 'application/json')}><Icon name="download" size={15} />{t('exportSigs')}</button>
+          <button className="btn" onClick={async () => {
+            try { const r = await e.updateCatalog(); e.toast(r.newer ? t('updated', { v: r.version }) : t('upToDate', { v: e.catalogVersion })) } catch (err) { e.toast(t('updateFailed', { e: err.message }), 'warn') }
+          }}><Icon name="download" size={15} />{t('checkUpdate')}</button>
+        </div>
+      </div>
+
+      <div className="card card-pad">
+        <h3>{t('packs')}</h3>
+        <div className="small muted" style={{ marginBottom: 8 }}>{t('packsHint')}</div>
+        <div className="row wrap">
+          {PACKS.map((p) => (
+            <button key={p.id} className="chip" onClick={() => e.toast(t('packApplied', { n: e.applyPack(p.classes, { attentionOnly: p.attentionOnly }) }))}>
+              <Icon name={p.icon} size={14} />{t('pack_' + p.id)}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -141,8 +164,8 @@ export function Signatures() {
             </div>
             {openId === f.id && (
               <div style={{ padding: '0 14px 14px' }}>
-                {f.attentionNote && <div className="note small" style={{ background: 'var(--danger-soft)', marginBottom: 8 }} dir="ltr">{f.attentionNote}</div>}
-                {f.notes && <div className="small muted" dir="ltr" style={{ marginBottom: 8, textAlign: 'start' }}>{f.notes}</div>}
+                {f.attentionNote && <div className="note small" style={{ background: 'var(--danger-soft)', marginBottom: 8 }} dir="auto">{e.fleetNotes(f).attentionNote}</div>}
+                {f.notes && <div className="small muted" dir="auto" style={{ marginBottom: 8, textAlign: 'start' }}>{e.fleetNotes(f).notes}</div>}
                 <div className="row wrap" style={{ marginBottom: 8 }}>
                   {f.rules.slice(0, 24).map((r, i) => <span key={i} className="tag mono" style={r.enabled === false ? { opacity: .4 } : undefined}>{describeRule(r)}</span>)}
                   {f.rules.length > 24 && <span className="tag">+{f.rules.length - 24}</span>}

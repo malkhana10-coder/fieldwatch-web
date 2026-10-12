@@ -196,6 +196,10 @@ const ar = {
   downloadUnavailable: 'لا يمكن حفظ ملفات {ext} من هذه المعاينة. استخدم نسخة Netlify.',
 }
 
+import { EN2, AR2 } from './i18n2.js'
+Object.assign(en, EN2)
+Object.assign(ar, AR2)
+
 export const DICT = { en, ar }
 
 export function makeT(lang) {

@@ -1,7 +1,7 @@
 // Offline-first cache: app shell + catalog. Network first for HTML, cache first for the rest.
-const CACHE = 'fieldwatch-web-v1'
+const CACHE = 'fieldwatch-web-v2'
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(['./', './index.html', './data/signatures.json', './data/radiodb.json', './icon.svg', './manifest.webmanifest'])).then(() => self.skipWaiting()))
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(['./', './index.html', './data/signatures.json', './data/radiodb.json', './data/notes-ar.json', './icon.svg', './manifest.webmanifest'])).then(() => self.skipWaiting()))
 })
 self.addEventListener('activate', (e) => {
   e.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim()))

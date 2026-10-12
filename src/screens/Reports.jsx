@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { useEngine, Icon, Sheet, fmtDur, copyText, ConfirmButton } from '../ui.jsx'
-import { debrief, compareSits, sitCsv, sitGpx, sitKml, sitWigle, logCsv, aiPrompt } from '../engine/reports.js'
+import { debrief, compareSits, sitCsv, sitGpx, sitKml, sitWigle, logCsv, aiPrompt, sitCot } from '../engine/reports.js'
+import { MapView, Replay, PlaceDiff, FormalReport, EncryptedExport, TrendAndWeek } from './ReportsExtra.jsx'
+import { pickFile } from '../engine/storage.js'
 import { download, inViewer } from '../engine/storage.js'
 import { maskMac } from '../engine/geo.js'
 
@@ -49,6 +51,8 @@ function Debrief({ sit, onClose }) {
   const privacy = e.settings.privacy
   const d = debrief(sit, e)
   const [prompt, setPrompt] = useState(null)
+  const [formal, setFormal] = useState(false)
+  const [encExp, setEncExp] = useState(false)
   const max = d.byClass[0]?.[1] || 1
   const fname = sit.name.replace(/[^\w؀-ۿ-]+/g, '_').slice(0, 40)
   return (
@@ -62,6 +66,9 @@ function Debrief({ sit, onClose }) {
           <button className="btn sm" disabled={privacy} onClick={() => download(fname + '-wigle.csv', sitWigle(sit), 'text/csv')}>{t('exportWigle')}</button>
           {!inViewer && <button className="btn sm" onClick={() => window.print()}><Icon name="file" size={14} />{t('printPdf')}</button>}
           <button className="btn sm" onClick={() => setPrompt(aiPrompt(sit, e, privacy))}><Icon name="sparkle" size={14} />{t('aiExport')}</button>
+          <button className="btn sm" disabled={privacy} onClick={() => download(fname + '-cot.xml', sitCot(sit, e), 'text/xml')}>{t('exportCot')}</button>
+          <button className="btn sm" onClick={() => setEncExp(true)}><Icon name="lock" size={14} />{t('encryptedExport')}</button>
+          <button className="btn sm primary" onClick={() => setFormal(true)}><Icon name="file" size={14} />{t('officialReport')}</button>
         </div>
         {privacy && <div className="note small">{t('privacyHint')}</div>}
         <div className="stats">
@@ -74,7 +81,9 @@ function Debrief({ sit, onClose }) {
           {t.date(sit.start)} → {sit.end ? t.date(sit.end) : t('sitRunning')} · Wi-Fi {d.wifi} · BLE {d.ble} · {t('path')} {Math.round(d.pathLen)} {t('m')}
           {d.floods.length > 0 && <> · {t('floodTitle')}: {d.floods.length} ({d.floodHidden})</>}
         </div>
-        <div className="card card-pad"><h3>{t('path')}</h3><PathPlot sit={sit} privacy={privacy} /></div>
+        <div className="card card-pad"><h3>{t('map')}</h3><MapView sit={sit} fallback={<PathPlot sit={sit} privacy={privacy} />} /></div>
+        <Replay sit={sit} />
+        <PlaceDiff sit={sit} />
         <div className="grid-2">
           <div className="card card-pad"><h3>{t('byClass')}</h3>{d.byClass.map(([c, n]) => <Bar key={c} label={t.cls(c)} n={n} max={max} />)}{!d.byClass.length && <span className="faint">—</span>}</div>
           <div className="card card-pad"><h3>{t('topSignatures')}</h3>{d.bySig.map(([s, n]) => <Bar key={s} label={s} n={n} max={d.bySig[0][1]} color="var(--info)" />)}{!d.bySig.length && <span className="faint">—</span>}</div>
@@ -115,6 +124,8 @@ function Debrief({ sit, onClose }) {
           {d.mine.length > 0 && <div className="small muted" style={{ marginTop: 8 }}>{t('mine')}: {d.mine.map((r) => e.named[r.key]?.name || r.name || r.mac).join(', ')}</div>}
         </div>
       </div>
+      {formal && <FormalReport sit={sit} onClose={() => setFormal(false)} />}
+      {encExp && <EncryptedExport sit={sit} onClose={() => setEncExp(false)} />}
       {prompt && (
         <Sheet title={t('aiExport')} onClose={() => setPrompt(null)} className="dialog" actions={<button className="btn sm primary" onClick={async () => { await copyText(prompt); e.toast(t('copied')) }}><Icon name="copy" size={14} />{t('share')}</button>}>
           <div className="note info small" style={{ marginBottom: 10 }}>{t('aiExportHint')}</div>
@@ -182,6 +193,21 @@ export function Reports() {
             <button className="btn sm" onClick={() => setOpen(active.id)}>{t('debrief')}</button>
           </div>
         )}
+      </div>
+
+      <TrendAndWeek />
+      <div className="row wrap">
+        <span className="spacer" />
+        <button className="btn sm" onClick={async () => {
+          const f = await pickFile('.json')
+          if (!f) return
+          try {
+            const j = JSON.parse(f.text)
+            // Encrypted files need a password: those are imported from More → Team.
+            if (j.format === 'fieldwatch-encrypted') { e.toast(t('importEncrypted') + ': ' + t('more') + ' → ' + t('team'), 'warn'); return }
+            e.toast('+' + e.importSits(Array.isArray(j) ? j : j.sits || [j]))
+          } catch (err) { e.toast(t('importFailed', { e: err.message }), 'warn') }
+        }}><Icon name="upload" size={14} />{t('importScans')}</button>
       </div>
 
       {sel.length === 2 && (

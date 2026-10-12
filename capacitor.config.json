@@ -1,0 +1,6 @@
+{
+  "appId": "app.fieldwatch.web",
+  "appName": "Fieldwatch Web",
+  "webDir": "dist",
+  "android": { "allowMixedContent": false }
+}

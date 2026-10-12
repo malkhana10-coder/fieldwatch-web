@@ -1,6 +1,8 @@
 import { useEffect, useState, Fragment } from 'react'
 import { useEngine, Icon, Seg, Switch, Setting, ConfirmButton } from '../ui.jsx'
 import { download, pickFile } from '../engine/storage.js'
+import { CLASSES } from '../i18n.js'
+import { ALERT_LEVELS } from '../engine/engine.js'
 
 let deferredInstall = null
 if (typeof window !== 'undefined') {
@@ -26,7 +28,11 @@ export function Settings() {
     ['Speech synthesis', 'speechSynthesis' in window],
     ['Service worker (offline)', 'serviceWorker' in navigator],
     ['IndexedDB', 'indexedDB' in window],
-    ['Wi-Fi scanning', false],
+    ['Wi-Fi scanning', !!window.Capacitor?.isNativePlatform?.()],
+    ['Web Serial (ESP32)', 'serial' in navigator],
+    ['Compass', 'DeviceOrientationEvent' in window],
+    ['Speech recognition', !!(window.SpeechRecognition || window.webkitSpeechRecognition)],
+    ['Web Crypto', !!crypto?.subtle],
   ]
   return (
     <div className="stack">
@@ -42,6 +48,25 @@ export function Settings() {
           ]} />
         </div>
         <Setting title={t('privacy')} hint={t('privacyHint')}><Switch checked={s.privacy} onChange={(v) => e.set({ privacy: v })} /></Setting>
+        <div className="setting" style={{ flexWrap: 'wrap' }}>
+          <div style={{ flex: '1 0 100%' }}>{t('modeLabel')}<div className="small muted">{t('modeHint')}</div></div>
+          <Seg value={s.mode} onChange={(v) => e.set({ mode: v })} options={[{ value: 'simple', label: t('simpleMode') }, { value: 'advanced', label: t('advancedMode') }]} />
+        </div>
+        <div className="setting" style={{ flexWrap: 'wrap' }}>
+          <div style={{ flex: '1 0 100%' }}>{t('notesLanguage')}</div>
+          <Seg value={s.notesLang} onChange={(v) => e.set({ notesLang: v })} options={[{ value: 'auto', label: t('notesAuto') }, { value: 'en', label: t('notesEn') }]} />
+        </div>
+      </div>
+
+      <div className="section-title">{t('accessibility')}</div>
+      <div className="card">
+        <div className="setting" style={{ flexWrap: 'wrap' }}>
+          <div style={{ flex: '1 0 100%' }}>{t('fontSize')}</div>
+          <Seg value={s.fontScale} onChange={(v) => e.set({ fontScale: v })} options={[100, 115, 130, 150].map((v) => ({ value: v, label: v + '%' }))} />
+        </div>
+        <Setting title={t('highContrast')}><Switch checked={s.highContrast} onChange={(v) => e.set({ highContrast: v })} /></Setting>
+        <Setting title={t('reduceMotion')}><Switch checked={s.reduceMotion} onChange={(v) => e.set({ reduceMotion: v })} /></Setting>
+        <Setting title={t('voiceCommands')} hint={t('voiceHint')}><Switch checked={s.voiceCommands} onChange={(v) => e.set({ voiceCommands: v })} /></Setting>
       </div>
 
       <div className="section-title">{t('alerts')}</div>
@@ -62,6 +87,28 @@ export function Settings() {
           </select>
         </Setting>
         <Setting title={t('floodDetect')}><Switch checked={s.floodDetect} onChange={(v) => e.set({ floodDetect: v })} /></Setting>
+        <div className="setting" style={{ flexWrap: 'wrap' }}>
+          <div className="grow">{t('quietHours')}</div>
+          <Switch checked={s.quietHours?.on} onChange={(v) => e.set({ quietHours: { ...s.quietHours, on: v } })} />
+          {s.quietHours?.on && (
+            <div className="row" style={{ flex: '1 0 100%' }}>
+              <label className="row small">{t('from')} <select id="qh-start" className="input" style={{ width: 'auto' }} value={s.quietHours.start} onChange={(ev) => e.set({ quietHours: { ...s.quietHours, start: Number(ev.target.value) } })}>{Array.from({ length: 24 }, (_, h) => <option key={h} value={h}>{String(h).padStart(2, '0')}:00</option>)}</select></label>
+              <label className="row small">{t('to')} <select id="qh-end" className="input" style={{ width: 'auto' }} value={s.quietHours.end} onChange={(ev) => e.set({ quietHours: { ...s.quietHours, end: Number(ev.target.value) } })}>{Array.from({ length: 24 }, (_, h) => <option key={h} value={h}>{String(h).padStart(2, '0')}:00</option>)}</select></label>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="section-title">{t('alertLevels')}</div>
+      <div className="card">
+        {CLASSES.map((c) => (
+          <div key={c} className="setting">
+            <div className="grow">{t.cls(c)}</div>
+            <select id={'lvl-' + c} className="input" style={{ width: 'auto' }} value={e.classAlertLevel(c)} onChange={(ev) => e.set({ classAlert: { ...s.classAlert, [c]: ev.target.value } })} aria-label={t.cls(c)}>
+              {ALERT_LEVELS.map((l) => <option key={l} value={l}>{t('lvl_' + l)}</option>)}
+            </select>
+          </div>
+        ))}
       </div>
 
       <div className="section-title">{t('source')}</div>
@@ -71,6 +118,9 @@ export function Settings() {
           <div style={{ flex: '1 0 100%' }}>{t('scanIntensity')}</div>
           <Seg value={s.density} onChange={(v) => e.set({ density: v })} options={[{ value: 'SAVER', label: t('saver') }, { value: 'BALANCED', label: t('balanced') }, { value: 'PERFORMANCE', label: t('performance') }]} />
         </div>
+        <Setting title={t('sourceSerial')} hint={t('sourceSerialHint')}>
+          <button className="btn sm" onClick={() => { e.set({ source: 'serial' }); e.start() }} disabled={e.running}><Icon name="play" size={14} />{t('start')}</button>
+        </Setting>
         <Setting title={t('sourceReplay')} hint={t('sourceReplayHint')}>
           <button className="btn sm" onClick={async () => {
             const f = await pickFile('.csv,.jsonl,.json,.txt')
@@ -99,6 +149,12 @@ export function Settings() {
           <dt>{t('radios')}</dt><dd>{e.radios.size}</dd>
           <dt>{t('log')}</dt><dd>{e.log.length}</dd>
         </dl>
+      </div>
+
+      <div className="section-title">{t('errors')}</div>
+      <div className="card card-pad small">
+        {!e.errors.length && <span className="faint">{t('noErrors')}</span>}
+        {e.errors.slice(-10).reverse().map((x, i) => <div key={i} className="mono" style={{ fontSize: 11.5, overflowWrap: 'anywhere' }}>{t.time(x.t)} · {x.message} · {x.where}</div>)}
       </div>
 
       <div className="section-title">{t('about')}</div>

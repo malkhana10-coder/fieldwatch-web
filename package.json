@@ -12,11 +12,18 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "0.128.0",
+    "@capacitor-community/bluetooth-le": "8.3.0",
+    "@capacitor/android": "8.5.2",
+    "@capacitor/core": "8.5.2",
+    "leaflet": "1.9.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@capacitor/cli": "8.5.2",
     "@vitejs/plugin-react": "^4.3.4",
+    "playwright": "1.56.1",
     "vite": "^5.4.11",
     "vitest": "^2.1.8"
   }

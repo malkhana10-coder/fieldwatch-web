@@ -4,6 +4,8 @@ import { explainMatch, suggestFleet, hex4 } from '../engine/catalog.js'
 import { serviceName } from '../engine/lookup.js'
 import { maskMac } from '../engine/geo.js'
 import { radioText } from '../engine/reports.js'
+import { riskScore, RISK_TEXT, explainPlain, guidance, distanceBand, appleKind } from '../engine/intel.js'
+import { RiskBadge } from './Home.jsx'
 import { radioColor } from './Live.jsx'
 import { SignatureEditor } from './Signatures.jsx'
 
@@ -26,10 +28,45 @@ export function Detail({ radioKey, onClose, onHunt }) {
           <button className="btn" onClick={() => setNewSig(suggestFleet(r))}><Icon name="plus" size={16} />{t('createSignature')}</button>
         </div>
 
+        {(() => {
+          const risk = riskScore(r, { engine: e, place: e.currentPlace() })
+          const band = distanceBand(r.rssi)
+          const apple = appleKind(r)
+          return (
+            <div className="card card-pad stack">
+              <div className="row" style={{ gap: 12 }}>
+                <RiskBadge score={risk.score} big />
+                <div className="grow">
+                  <div style={{ fontWeight: 700 }}>{t('explanation')}</div>
+                  <div className="small">{explainPlain(r, e)}</div>
+                </div>
+              </div>
+              <div className="row wrap">
+                <span className="tag"><Icon name="target" size={12} />{t('distance')}: {t.lang === 'ar' ? band.ar : band.en}</span>
+                {apple && <span className="tag info">{t('appleType')}: {t.lang === 'ar' ? apple.ar : apple.en}</span>}
+                {r.linkedFrom && <span className="tag warn">{t('rotating', { n: r.linkedCount })}</span>}
+                {r.anomaly && <span className="tag attn">{t('anomaly')}</span>}
+              </div>
+              {risk.reasons.filter((x) => x.w).length > 0 && (
+                <div>
+                  <div className="small muted" style={{ marginBottom: 4 }}>{t('why2')}</div>
+                  <div className="row wrap">{risk.reasons.filter((x) => x.w).map((x) => <span key={x.k} className={'tag ' + (x.w < 0 ? 'ok' : x.w >= 20 ? 'attn' : '')}>{(RISK_TEXT[x.k]?.[t.lang] || x.k)} <span className="ltr">{x.w > 0 ? '+' : ''}{x.w}</span></span>)}</div>
+                </div>
+              )}
+              {risk.score >= 30 && (
+                <div>
+                  <div className="small muted" style={{ marginBottom: 4 }}>{t('whatToDo')}</div>
+                  <ol className="steps">{guidance(r, e).map((g, i) => <li key={i}>{g}</li>)}</ol>
+                </div>
+              )}
+            </div>
+          )
+        })()}
+
         {fleets.filter((f) => f.attentionNote).map((f) => (
           <div key={f.id} className="note" style={{ background: 'var(--danger-soft)' }}>
             <div className="row" style={{ marginBottom: 4 }}><Icon name="alert" size={16} style={{ color: 'var(--danger)' }} /><b>{t('attention')} · {f.name}</b></div>
-            <div dir="ltr" style={{ textAlign: 'start' }}>{f.attentionNote}</div>
+            <div dir="auto" style={{ textAlign: 'start' }}>{e.fleetNotes(f).attentionNote}</div>
           </div>
         ))}
 
@@ -77,7 +114,7 @@ export function Detail({ radioKey, onClose, onHunt }) {
             <div key={f.id} style={{ marginBottom: 10 }}>
               <div className="row"><b>{f.name}</b><span className="tag">{t.cls(f.kind)}</span>{e.watch.has(f.id) && <span className="tag info"><Icon name="bell" size={11} />{t('bookmarked')}</span>}</div>
               <div className="row wrap" style={{ marginTop: 4 }}>{explainMatch(r, f).map((s, i) => <span key={i} className="tag mono">{s}</span>)}</div>
-              {f.notes && <div className="small muted" dir="ltr" style={{ marginTop: 4, textAlign: 'start' }}>{f.notes}</div>}
+              {f.notes && <div className="small muted" dir="auto" style={{ marginTop: 4, textAlign: 'start' }}>{e.fleetNotes(f).notes}{e.fleetNotes(f).translated && <span className="tag" style={{ marginInlineStart: 6 }}>{t('translatedNote')}</span>}</div>}
             </div>
           ))}
         </div>

@@ -20,6 +20,8 @@ export function SourcePicker() {
       <option value="demo">{t('sourceDemo')}</option>
       <option value="ble">{t('sourceBle')}</option>
       <option value="replay">{t('sourceReplay')}</option>
+      <option value="serial">{t('sourceSerial')}</option>
+      {window.Capacitor?.isNativePlatform?.() && <option value="native">{t('sourceNative')}</option>}
     </select>
   )
 }
@@ -193,6 +195,39 @@ function Timeline({ radios, onOpen, now }) {
   )
 }
 
+/** Crowded places: fold radios that share a signature or maker into one expandable row. */
+function GroupedList({ radios, onOpen, now }) {
+  const e = useEngine()
+  const t = e.t
+  const [open, setOpen] = useState({})
+  const groups = new Map()
+  for (const r of radios) {
+    const k = r.attention || e.named[r.key] ? 'solo:' + r.key : r.fleetIds[0] ? 'f:' + r.fleetIds[0] : 'v:' + r.kind + ':' + (r.company || r.vendor || (r.randomized ? 'random' : 'other'))
+    if (!groups.has(k)) groups.set(k, [])
+    groups.get(k).push(r)
+  }
+  const out = []
+  for (const [k, list] of groups) {
+    if (list.length < 4 || k.startsWith('solo:')) { list.forEach((r) => out.push(<RadioRow key={r.key} r={r} onOpen={onOpen} now={now} />)); continue }
+    const head = list[0]
+    const label = head.fleetIds[0] ? e.fleetById(head.fleetIds[0])?.name : head.company || head.vendor || (head.kind === 'WIFI' ? 'Wi-Fi' : 'BLE')
+    out.push(
+      <div key={k} className="group-row">
+        <button className="radio" onClick={() => setOpen({ ...open, [k]: !open[k] })} aria-expanded={!!open[k]}>
+          <Glyph r={head} color={radioColor(e, head)} />
+          <div style={{ minWidth: 0 }}>
+            <div className="radio-name ellipsis">{label}</div>
+            <div className="radio-meta"><span className="tag">{t('groupCount', { n: list.length })}</span><span className={'tag ' + (head.kind === 'WIFI' ? 'wifi' : 'ble')}>{head.kind === 'WIFI' ? 'Wi-Fi' : 'BLE'}</span></div>
+          </div>
+          <div className="rssi"><b className="ltr">{Math.max(...list.map((x) => x.rssi))}</b><small>{open[k] ? '▾' : '▸'}</small></div>
+        </button>
+        {open[k] && <div className="radio-list group-children">{list.map((r) => <RadioRow key={r.key} r={r} onOpen={onOpen} now={now} />)}</div>}
+      </div>,
+    )
+  }
+  return <div className="radio-list">{out}</div>
+}
+
 export function Live({ onOpen }) {
   const e = useEngine()
   const t = e.t
@@ -236,6 +271,7 @@ export function Live({ onOpen }) {
           <option value="NAME">{t('sortName')}</option>
           <option value="SIGNATURES">{t('sortSig')}</option>
         </select>
+        <button className={'btn' + (e.settings.groupSimilar ? ' primary' : '')} onClick={() => e.set({ groupSimilar: !e.settings.groupSimilar })} aria-pressed={e.settings.groupSimilar}><Icon name="grid" size={15} /><span className="hide-sm">{t('group')}</span></button>
         <button className={'btn' + (filtersOn ? ' primary' : '')} onClick={() => setShowFilters(true)}><Icon name="filter" size={15} />{t('filters')}</button>
       </div>
       {e.flood && !e.flood.open && e.hiddenKeys.size > 0 && (
@@ -256,7 +292,8 @@ export function Live({ onOpen }) {
       ) : view === 'RADAR' ? <Radar radios={radios} onOpen={onOpen} />
         : view === 'CLASS' ? <ByClass radios={radios} onOpen={onOpen} now={now} />
           : view === 'TIMELINE' ? <Timeline radios={radios} onOpen={onOpen} now={now} />
-            : <div className="radio-list">{radios.slice(0, 300).map((r) => <RadioRow key={r.key} r={r} onOpen={onOpen} now={now} />)}</div>}
+            : e.settings.groupSimilar && radios.length > 30 ? <GroupedList radios={radios.slice(0, 400)} onOpen={onOpen} now={now} />
+              : <div className="radio-list">{radios.slice(0, 300).map((r) => <RadioRow key={r.key} r={r} onOpen={onOpen} now={now} />)}</div>}
       {showFilters && <Filters onClose={() => setShowFilters(false)} />}
     </div>
   )
