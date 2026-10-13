@@ -60,12 +60,12 @@ jobs:
         with:
           name: Fieldwatch-Web-debug-apk
           path: Fieldwatch-Web-debug.apk
-      - name: Publish preview release (main only)
-        if: github.ref == 'refs/heads/main'
+      - name: Publish preview release (direct APK download link)
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete android-preview --yes --cleanup-tag || true
-          gh release create android-preview Fieldwatch-Web-debug.apk \
+          gh release create android-preview Fieldwatch-Web-debug.apk --target "$GITHUB_SHA" \
             --prerelease --title "Android preview (debug build)" \
-            --notes "Automatic debug build of ${GITHUB_SHA::7}. Unsigned for the Play Store; install by sideloading."
+            --notes "Automatic debug build of ${GITHUB_REF_NAME} @ ${GITHUB_SHA::7}. Unsigned for the Play Store; install by sideloading."
