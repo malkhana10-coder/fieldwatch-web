@@ -76,6 +76,9 @@ function defaultSettings() {
   }
 }
 
+// Injected by Vite from package.json (falls back in plain Node, e.g. ad-hoc scripts).
+export const APP_VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev'
+
 const LOG_CAP = 6000
 // Credentials never leave this device: the Telegram bot, the bridge URL (it
 // carries the bridge's access token) and the Anthropic API key are stripped from
@@ -218,7 +221,7 @@ class Engine {
     return clean.length
   }
   exportSignatures() {
-    return JSON.stringify({ format: 'fieldwatch-signatures', formatVersion: 1, exportedAt: new Date().toISOString(), appVersion: 'web-1.3.1', catalogVersion: this.catalogVersion, fleets: this.fleets }, null, 1)
+    return JSON.stringify({ format: 'fieldwatch-signatures', formatVersion: 1, exportedAt: new Date().toISOString(), appVersion: 'web-' + APP_VERSION, catalogVersion: this.catalogVersion, fleets: this.fleets }, null, 1)
   }
 
   // ---------- named radios ----------

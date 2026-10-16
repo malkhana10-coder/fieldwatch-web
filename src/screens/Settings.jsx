@@ -1,6 +1,7 @@
 import { useEffect, useState, Fragment } from 'react'
 import { useEngine, Icon, Seg, Switch, Setting, ConfirmButton } from '../ui.jsx'
 import { download, pickFile } from '../engine/storage.js'
+import { APP_VERSION } from '../engine/engine.js'
 
 let deferredInstall = null
 if (typeof window !== 'undefined') {
@@ -195,7 +196,7 @@ export function Settings() {
 
       <div className="section-title">{t('about')}</div>
       <div className="card card-pad stack small">
-        <div><b>{t('appName')} Web</b> · {t('version')} 1.3.0 · {t('unofficial')}</div>
+        <div><b>{t('appName')} Web</b> · {t('version')} {APP_VERSION} · {t('unofficial')}</div>
         <div className="muted">{t('disclaimer')}</div>
         <div className="muted">{t('disclaimerPort')}</div>
         <div className="muted" dir="ltr" style={{ textAlign: 'start' }}>Fieldwatch © 2026 Off Grid Pete LLC — MIT License. IEEE and Bluetooth SIG assigned-number tables are subject to those organizations' terms.</div>
