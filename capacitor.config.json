@@ -3,7 +3,8 @@
   "appName": "Fieldwatch",
   "webDir": "dist",
   "android": {
-    "allowMixedContent": false,
+    "allowMixedContent": true,
+    "appendUserAgent": "FieldwatchWeb-Android (+https://github.com/malkhana10-coder/fieldwatch-web)",
     "backgroundColor": "#0a0f0d"
   }
 }

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Cleartext is needed for exactly one thing: the plain ws:// WebSocket to the
+  Fieldwatch bridge (bridge/fieldwatch_bridge.py has no TLS).
+
+  - Same phone (Termux): ws://127.0.0.1 or ws://localhost. Allowed by the
+    domain-config below.
+  - Laptop or Raspberry Pi on the same Wi-Fi: ws://192.168.x.x and the like.
+    Private addresses cannot be listed here (no wildcards for IP ranges), so the
+    base config allows cleartext too. capacitor.config.json sets
+    android.allowMixedContent so the https://localhost page may open that socket.
+
+  What limits the app is the page's Content-Security-Policy (index.html): it
+  allows plain-text connections only as ws: WebSockets, which the app opens only to the
+  bridge URL the user types, and it has no http: source for scripts, styles,
+  images, fonts or fetch. Everything else stays on https with system CAs only.
+  To allow only a bridge on this phone, set the base-config to
+  cleartextTrafficPermitted="false"; the domain-config keeps Termux working.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>

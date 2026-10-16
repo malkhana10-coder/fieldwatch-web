@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Files the app may hand to other apps through its FileProvider:
+     - cache: exports written by download() (cache/exports/) for the share sheet;
+     - the app's own external files dir: photos taken from a file <input>.
+     Shared storage (the whole SD card) is deliberately not exposed. -->
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
-    <external-path name="my_images" path="." />
+    <external-files-path name="my_images" path="." />
     <cache-path name="my_cache_images" path="." />
 </paths>
