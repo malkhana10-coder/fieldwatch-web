@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react'
 import { useEngine, Icon, Sheet, Switch, Setting, CLASS_ICON, ConfirmButton } from '../ui.jsx'
-import { describeRule } from '../engine/catalog.js'
+import { describeRule, normMac } from '../engine/catalog.js'
+import { maskMac } from '../engine/geo.js'
+import { maskMacsIn, isPrivateMacRule } from './format.jsx'
 import { fleetColor } from './Live.jsx'
 import { PALETTE } from '../engine/catalog.js'
 import { download, pickFile } from '../engine/storage.js'
@@ -12,6 +14,7 @@ export function SignatureEditor({ fleet, isNew, onClose }) {
   const e = useEngine()
   const t = e.t
   const [f, setF] = useState(() => structuredClone(fleet))
+  const privacy = e.settings.privacy
   const upd = (patch) => setF({ ...f, ...patch })
   const updRule = (i, patch) => upd({ rules: f.rules.map((r, j) => (j === i ? { ...r, ...patch } : r)) })
   return (
@@ -20,7 +23,8 @@ export function SignatureEditor({ fleet, isNew, onClose }) {
       <div className="stack">
         <label className="field"><span>{t('name')}</span><input className="input" dir="auto" value={f.name} onChange={(ev) => upd({ name: ev.target.value })} /></label>
         <div className="row wrap">
-          <label className="field grow"><span>{t('class')}</span>
+          {/* A 180 px basis: on phones the class gets its own row above the colour swatches. */}
+          <label className="field" style={{ flex: '1 1 180px', minWidth: 0 }}><span>{t('class')}</span>
             <select className="input" value={f.kind} onChange={(ev) => upd({ kind: ev.target.value })}>
               {CLASSES.map((c) => <option key={c} value={c}>{t.cls(c)}</option>)}
             </select>
@@ -43,7 +47,10 @@ export function SignatureEditor({ fleet, isNew, onClose }) {
                 <select className="input" style={{ width: 'auto' }} aria-label={t('ruleKind')} value={r.kind} onChange={(ev) => updRule(i, { kind: ev.target.value })}>{RULE_KINDS.map((k) => <option key={k}>{k}</option>)}</select>
                 {['MANUFACTURER_ID', 'MANUFACTURER_DATA'].includes(r.kind)
                   ? <input className="input mono" style={{ width: 110 }} aria-label={t('ruleCompany')} placeholder="0x004C" value={'0x' + (r.companyId || 0).toString(16).toUpperCase()} onChange={(ev) => updRule(i, { companyId: parseInt(ev.target.value.replace(/^0x/i, ''), 16) || 0 })} />
-                  : <input className="input mono grow" style={{ minWidth: 120 }} aria-label={t('ruleValue')} value={r.text} placeholder={r.kind === 'OUI' ? 'AA:BB:CC' : r.kind.startsWith('NAME') ? 'Name*' : 'FEAA'} onChange={(ev) => updRule(i, { text: ev.target.value })} />}
+                  : isPrivateMacRule(r, privacy)
+                    // Privacy mode: show the address masked and read-only (the rule keeps the full value).
+                    ? <input className="input mono grow" style={{ minWidth: 120 }} aria-label={t('ruleValue')} value={maskMac(normMac(r.text), true)} readOnly title={t('privacyHint')} />
+                    : <input className="input mono grow" style={{ minWidth: 120 }} aria-label={t('ruleValue')} value={r.text} placeholder={r.kind === 'OUI' ? 'AA:BB:CC' : r.kind.startsWith('NAME') ? 'Name*' : 'FEAA'} onChange={(ev) => updRule(i, { text: ev.target.value })} />}
                 {['MANUFACTURER_DATA', 'SERVICE_DATA'].includes(r.kind) && <input className="input mono" style={{ width: 110 }} aria-label={t('ruleData')} placeholder={t('ruleData')} value={r.dataPrefixHex} onChange={(ev) => updRule(i, { dataPrefixHex: ev.target.value })} />}
                 <select className="input" style={{ width: 'auto' }} aria-label={t('fRadio')} value={r.radio || ''} onChange={(ev) => updRule(i, { radio: ev.target.value || null })}>
                   <option value="">{t('fBoth')}</option><option value="WIFI">Wi-Fi</option><option value="BLE">BLE</option>
@@ -55,8 +62,8 @@ export function SignatureEditor({ fleet, isNew, onClose }) {
             {f.rules.length > 200 && <div className="setting small muted">+{f.rules.length - 200}…</div>}
           </div>
         </div>
-        <label className="field"><span>{t('sigNotes')}</span><textarea className="input" dir="auto" value={f.notes} onChange={(ev) => upd({ notes: ev.target.value })} /></label>
-        <label className="field"><span>{t('attentionNote')}</span><textarea className="input" dir="auto" value={f.attentionNote} onChange={(ev) => upd({ attentionNote: ev.target.value })} /></label>
+        <label className="field"><span>{t('sigNotes')}</span><textarea className="input" dir="auto" value={maskMacsIn(f.notes, privacy)} onChange={(ev) => upd({ notes: ev.target.value })} /></label>
+        <label className="field"><span>{t('attentionNote')}</span><textarea className="input" dir="auto" value={maskMacsIn(f.attentionNote, privacy)} onChange={(ev) => upd({ attentionNote: ev.target.value })} /></label>
         {!isNew && <ConfirmButton confirmLabel={t('tapConfirm')} onConfirm={() => { e.deleteFleet(f.id); onClose() }}><Icon name="trash" size={15} />{t('delete')}</ConfirmButton>}
       </div>
     </Sheet>
@@ -89,6 +96,7 @@ export function Signatures() {
     return true
   }).sort((a, b) => (liveCounts[b.id] || 0) - (liveCounts[a.id] || 0) || a.name.localeCompare(b.name))
   const ruleCount = e.fleets.reduce((a, f) => a + f.rules.length, 0)
+  const privacy = e.settings.privacy
 
   return (
     <div className="stack">
@@ -136,17 +144,17 @@ export function Signatures() {
                   {f.attentionNote && <span className="tag attn">!</span>}
                   {liveCounts[f.id] > 0 && <span className="tag ok">{liveCounts[f.id]}</span>}
                 </div>
-                <div className="tiny faint">{t.cls(f.kind)} · {t('ruleCount', { n: f.rules.length })} · {f.builtIn ? t('builtIn') : t('custom')}{f.decode ? ` · ${t('decodeTag')}` : ''}</div>
+                <div className="tiny faint">{t.cls(f.kind)} · {t.plural('ruleCount', f.rules.length)} · {f.builtIn ? t('builtIn') : t('custom')}{f.decode ? ` · ${t('decodeTag')}` : ''}</div>
               </button>
               <button className={'btn sm icon ' + (e.watch.has(f.id) ? '' : 'ghost')} style={e.watch.has(f.id) ? { color: 'var(--info)' } : undefined} title={t('bookmarked')} aria-label={t('bookmarked')} onClick={() => e.toggleWatch(f.id)}><Icon name="bell" size={15} /></button>
               <Switch checked={f.enabled} onChange={(v) => e.toggleFleet(f.id, v)} label={f.name} />
             </div>
             {openId === f.id && (
               <div style={{ padding: '0 14px 14px' }}>
-                {f.attentionNote && <div className="note small" style={{ background: 'var(--danger-soft)', marginBottom: 8 }} dir="ltr">{f.attentionNote}</div>}
-                {f.notes && <div className="small muted" dir="ltr" style={{ marginBottom: 8, textAlign: 'start' }}>{f.notes}</div>}
+                {f.attentionNote && <div className="note small" style={{ background: 'var(--danger-soft)', marginBottom: 8 }} dir="ltr">{maskMacsIn(f.attentionNote, privacy)}</div>}
+                {f.notes && <div className="small muted" dir="ltr" style={{ marginBottom: 8, textAlign: 'start' }}>{maskMacsIn(f.notes, privacy)}</div>}
                 <div className="row wrap" style={{ marginBottom: 8 }}>
-                  {f.rules.slice(0, 24).map((r, i) => <span key={i} className="tag mono" style={r.enabled === false ? { opacity: .4 } : undefined}>{describeRule(r)}</span>)}
+                  {f.rules.slice(0, 24).map((r, i) => <span key={i} className="tag mono" style={r.enabled === false ? { opacity: .4 } : undefined}>{maskMacsIn(describeRule(r, { privacy }), privacy)}</span>)}
                   {f.rules.length > 24 && <span className="tag">+{f.rules.length - 24}</span>}
                 </div>
                 <button className="btn sm" onClick={() => setEdit({ fleet: f })}><Icon name="gear" size={14} />{t('edit')}</button>

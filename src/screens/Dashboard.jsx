@@ -5,6 +5,9 @@ import { CLASSES } from '../i18n.js'
 import { maskMac } from '../engine/geo.js'
 import { TrackersCard, PlaceCard, MultiPlaceCard, DronesCard, AiPanel } from './Intel.jsx'
 import { livePrompt } from '../engine/ai.js'
+import { namedRev, MetaLine } from './format.jsx'
+
+const SEP = '\u00a0·\u00a0'
 
 function Bar({ label, n, max, color }) {
   return (
@@ -64,8 +67,11 @@ export function Dashboard({ onOpen }) {
   const sit = e.activeSit()
   // Detectors walk every radio; recompute at most every 3 s (rows keep live RSSI).
   const slow = tickOf(3000, now)
-  const track = useMemo(() => e.trackingAssessment(now), [slow, e.radios.size, e.named])
-  const hidden = useMemo(() => e.hiddenDevices(now), [slow, e.radios.size, e.named])
+  // Both leave Mine devices out. engine.setNamed mutates `named` in place, so key on its
+  // content: marking a device Mine then updates the lists at once, even while stopped.
+  const nrev = namedRev(e.named)
+  const track = useMemo(() => e.trackingAssessment(now), [slow, e.radios.size, nrev])
+  const hidden = useMemo(() => e.hiddenDevices(now), [slow, e.radios.size, nrev])
   const HIDDEN_MAX = 8
   const empty = !radios.length && !e.log.length
 
@@ -172,7 +178,7 @@ export function Dashboard({ onOpen }) {
                 <Glyph r={r} color={radioColor(e, r)} />
                 <div className="grow" style={{ minWidth: 0 }}>
                   <div className="row wrap" style={{ gap: 6 }}>{e.displayName(r) ? <b className="ellipsis" dir="auto">{e.displayName(r)}</b> : <b className="mono">{maskMac(r.mac, e.settings.privacy)}</b>}<span className="tag tag-long warn">{t(why)}</span></div>
-                  <div className="tiny faint ellipsis"><bdi dir="auto">{r.fleetIds.map((id) => e.fleetById(id)?.name).filter(Boolean).join(' + ') || r.vendor || r.kind}</bdi></div>
+                  <div className="tiny faint ellipsis ellipsis-start" dir="auto">{r.fleetIds.map((id) => e.fleetById(id)?.name).filter(Boolean).join(' + ') || r.vendor || r.kind}</div>
                 </div>
                 <div className="rssi"><b className="ltr">{r.rssi}</b><Bars rssi={r.rssi} /></div>
               </button>
@@ -188,7 +194,7 @@ export function Dashboard({ onOpen }) {
                 <Glyph r={r} color={radioColor(e, r)} />
                 <div className="grow" style={{ minWidth: 0 }}>
                   <div className="row wrap" style={{ gap: 6 }}>{r.hidden ? <b>{t('hidden')}</b> : <b className="mono">{maskMac(r.mac, e.settings.privacy)}</b>}<span className="tag attn">{t(why)}</span></div>
-                  <div className="tiny faint ellipsis">{r.hidden && <><span className="mono">{maskMac(r.mac, e.settings.privacy)}</span> · </>}{r.kind} · {r.vendor ? <bdi className="trunc" dir="auto">{r.vendor}</bdi> : t('unknown')} · {ago(t, r.lastSeen, now)}</div>
+                  <MetaLine start={<>{r.hidden && <><span className="mono">{maskMac(r.mac, e.settings.privacy)}</span>{SEP}</>}{r.kind}{!r.vendor && <>{SEP}{t('unknown')}</>}</>} shrink={r.vendor} end={ago(t, r.lastSeen, now)} />
                 </div>
                 <div className="rssi"><b className="ltr">{r.rssi}</b><Bars rssi={r.rssi} /></div>
               </button>

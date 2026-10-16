@@ -7,9 +7,8 @@ import { maskMac, distM } from '../engine/geo.js'
 import { trackerState, locate } from '../engine/intel.js'
 import { GeoMap, textNode, mapColors } from '../leaflet.jsx'
 import { analyze } from '../engine/ai.js'
+import { NumUnit, Dist, tNode, enumLabel, namedRev, MetaLine } from './format.jsx'
 
-/** Distance with localized units ("187 m" / "187 م"). */
-export const fmtM = (m, t) => (m == null ? '—' : m >= 1000 ? `${(m / 1000).toFixed(1)} ${t('km')}` : `${Math.round(m)} ${t('m')}`)
 const rowStyle = { width: '100%', background: 'none', border: 0, borderBlockStart: '1px solid var(--line)', textAlign: 'start' }
 /** Heavy lists on Home are recomputed at most every 3 s (radios are live objects, so rows still update). */
 const SLOW_MS = 3000
@@ -80,7 +79,8 @@ export function PlaceCard({ onOpen }) {
   const t = e.t
   const now = Date.now()
   const [learned, setLearned] = useState(0)
-  const p = useMemo(() => e.placeSummary(now), [tickOf(SLOW_MS, now), e.radios.size, e.mem, learned])
+  // Mine devices are left out, and engine.setNamed mutates `named` in place: key on its content.
+  const p = useMemo(() => e.placeSummary(now), [tickOf(SLOW_MS, now), e.radios.size, e.mem, learned, namedRev(e.named)])
   return (
     <div className="card card-pad">
       <div className="row wrap">
@@ -97,7 +97,7 @@ export function PlaceCard({ onOpen }) {
       {p.fresh.slice(0, 6).map((r) => (
         <RowButton key={r.key} r={r} onOpen={onOpen}>
           <b className="ellipsis" dir="auto" style={{ display: 'block' }}>{e.displayName(r) || fleetNames(e, r) || (r.hidden ? t('hidden') : t('unknown'))}</b>
-          <div className="tiny faint ellipsis"><span className="mono">{maskMac(r.mac, e.settings.privacy)}</span> · {r.kind}{(r.vendor || r.company) && <> · <bdi className="trunc" dir="auto">{r.vendor || r.company}</bdi></>}</div>
+          <MetaLine start={<><span className="mono">{maskMac(r.mac, e.settings.privacy)}</span>{'\u00a0·\u00a0'}{r.kind}</>} shrink={r.vendor || r.company} />
         </RowButton>
       ))}
       {!p.fresh.length && <span className="faint small">{t('placeNoneNew')}</span>}
@@ -111,7 +111,7 @@ export function MultiPlaceCard({ onOpen }) {
   const e = useEngine()
   const t = e.t
   const now = Date.now()
-  const list = useMemo(() => e.multiPlace(), [tickOf(SLOW_MS, now), e.mem])
+  const list = useMemo(() => e.multiPlace(), [tickOf(SLOW_MS, now), e.mem, namedRev(e.named)])
   return (
     <div className="card card-pad">
       <h3>{t('multiTitle')} ({list.length})</h3>
@@ -147,7 +147,6 @@ export function DronesCard({ onOpen }) {
   const you = e.pos
   const privacy = e.settings.privacy
   const C = mapColors()
-  const dist = (m) => <span className="nowrap">{fmtM(m, t)}</span>
   return (
     <div className="card card-pad">
       <h3>{t('dronesTitle')} ({drones.length})</h3>
@@ -183,15 +182,15 @@ export function DronesCard({ onOpen }) {
           <RowButton key={r.key} r={r} onOpen={onOpen}>
             <div className="row wrap" style={{ gap: 6 }}>
               <b className="mono ellipsis">{d.id || t('unknown')}</b>
-              {d.uaType != null && <span className="tag">{t('uaType' + d.uaType)}</span>}
-              {d.status != null && <span className={'tag ' + (d.status === 3 || d.status === 4 ? 'attn' : d.status === 2 ? 'info' : '')}>{t('droneSt' + d.status)}</span>}
+              {d.uaType != null && <span className="tag">{enumLabel(t, 'uaType', d.uaType, 15)}</span>}
+              {d.status != null && <span className={'tag ' + (d.status === 3 || d.status === 4 ? 'attn' : d.status === 2 ? 'info' : '')}>{enumLabel(t, 'droneSt', d.status, 4)}</span>}
             </div>
             <div className="tiny faint">
               {here ? <>
-                {t('droneHeight')} <span className="nowrap">{d.height ?? '—'} {t('m')}</span> · {t('droneSpeed')} <span className="nowrap">{d.speed ?? '—'} {t('mps')}</span>
+                {t('droneHeight')} <NumUnit v={d.height ?? '—'} u={t('m')} /> · {t('droneSpeed')} <NumUnit v={d.speed ?? '—'} u={t('mps')} />
                 {d.direction != null && <> · {t('droneHeading')} <span className="ltr">{Math.round(d.direction)}°</span></>}
-                {you && <> · {t('droneFromYou', { d: '⁨' + fmtM(distM(you, here), t) + '⁩' })}</>}
-                {d.opLat != null && <> · {t('droneOpDist', { d: '⁨' + fmtM(distM(here, { lat: d.opLat, lon: d.opLon }), t) + '⁩' })}</>}
+                {you && <> · {tNode(t, 'droneFromYou', { d: <Dist m={distM(you, here)} t={t} /> })}</>}
+                {d.opLat != null && <> · {tNode(t, 'droneOpDist', { d: <Dist m={distM(here, { lat: d.opLat, lon: d.opLon })} t={t} /> })}</>}
               </> : t('droneNoFix')}
               {d.operatorId && <> · {t('droneOpId')} <span className="mono">{d.operatorId}</span></>}
             </div>
@@ -253,8 +252,8 @@ export function LocateCard({ r }) {
     <div className="card card-pad">
       <h3>{t('locateTitle')}</h3>
       <div className="small" style={{ marginBottom: 8 }}>
-        {est ? t('locateEst', { r: est.radiusM, n: est.n }) : t('locateNeed', { n: samples.length })}
-        {est && e.pos && <> · {t('droneFromYou', { d: '⁨' + fmtM(distM(e.pos, est), t) + '⁩' })}</>}
+        {est ? tNode(t, 'locateEst', { r: <NumUnit v={'±' + est.radiusM} u={t('m')} />, n: est.n }) : t('locateNeed', { n: samples.length })}
+        {est && e.pos && <> · {tNode(t, 'droneFromYou', { d: <Dist m={distM(e.pos, est)} t={t} /> })}</>}
       </div>
       <GeoMap height={260} label={t('locateMapLabel')} fitKey={r.key + (est ? ':est' : '')} keys={r.key + ':' + samples.length + ':' + (est ? est.lat + ',' + est.lon : '')} draw={(L, g) => {
         const C = mapColors()
