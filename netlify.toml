@@ -3,21 +3,31 @@
   publish = "dist"
 
 [build.environment]
-  NODE_VERSION = "20"
+  NODE_VERSION = "22"
 
+# Hashed build output never changes under the same name.
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# Catalog and vendor DB: short HTTP cache so the service worker's background refresh sees updates.
 [[headers]]
   for = "/data/*"
   [headers.values]
-    Cache-Control = "public, max-age=86400"
+    Cache-Control = "public, max-age=3600, must-revalidate"
 
 [[headers]]
   for = "/sw.js"
   [headers.values]
     Cache-Control = "no-cache"
 
+# The page also carries a CSP <meta> (index.html); frame-ancestors only works as a header.
 [[headers]]
   for = "/*"
   [headers.values]
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "no-referrer"
-    Permissions-Policy = "bluetooth=(self), geolocation=(self)"
+    X-Frame-Options = "DENY"
+    Content-Security-Policy = "frame-ancestors 'none'"
+    Permissions-Policy = "bluetooth=(self), geolocation=(self), camera=(), microphone=()"

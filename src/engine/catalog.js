@@ -43,10 +43,32 @@ const uuidKey = (u) => {
   return h
 }
 
-export function globToRegex(pattern) {
-  const body = pattern.split('').map((ch) => (ch === '*' ? '.*' : ch === '?' ? '.' : ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))).join('')
-  return new RegExp('^' + body + '$', 'i')
+/**
+ * Case-insensitive glob match (`*` any run, `?` one character) in O(n·m) worst
+ * case with no backtracking blow-up — imported signatures are untrusted, and a
+ * regex built from `*a*a*a…` would freeze the app on a long name.
+ */
+export function globMatch(pattern, text) {
+  const p = String(pattern).toLowerCase().slice(0, 256)
+  const s = String(text).toLowerCase()
+  let i = 0, j = 0, star = -1, mark = 0
+  while (i < s.length) {
+    if (j < p.length && (p[j] === '?' || p[j] === s[i])) { i++; j++ }
+    else if (j < p.length && p[j] === '*') { star = j++; mark = i }
+    else if (star >= 0) { j = star + 1; i = ++mark }
+    else return false
+  }
+  while (j < p.length && p[j] === '*') j++
+  return j === p.length
 }
+/** Kept for callers that want a RegExp-like object; delegates to globMatch. */
+export function globToRegex(pattern) {
+  return { test: (text) => globMatch(pattern, text) }
+}
+
+// Derived lookups per rule object, kept out of the rule itself so they are never
+// saved, exported or carried over when a rule is edited.
+const aliasCache = new WeakMap()
 
 function ruleScope(rule) {
   switch (rule.kind) {
@@ -92,10 +114,11 @@ export function ruleHits(d, rule) {
     case 'NAME_CONTAINS':
       return !!rule.text && !d.hidden && name.toLowerCase().includes(rule.text.toLowerCase())
     case 'NAME_GLOB':
-      return !!rule.text && !d.hidden && !!name && (rule._re || (rule._re = globToRegex(rule.text))).test(name)
+      return !!rule.text && !d.hidden && !!name && globMatch(rule.text, name)
     case 'SERVICE_UUID': {
       if (!rule.text) return false
-      const al = rule._al || (rule._al = new Set([...uuidAliases(rule.text)].map(uuidKey)))
+      let al = aliasCache.get(rule)
+      if (!al || al.text !== rule.text) { al = new Set([...uuidAliases(rule.text)].map(uuidKey)); al.text = rule.text; aliasCache.set(rule, al) }
       return (d.uuids || []).some((u) => al.has(uuidKey(u)))
     }
     case 'SERVICE_DATA': {

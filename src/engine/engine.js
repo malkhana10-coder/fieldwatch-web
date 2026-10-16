@@ -13,6 +13,49 @@ import { makeT } from '../i18n.js'
 
 const DEFAULT_FILTERS = { radio: 'BOTH', minRssi: -100, onlyMatched: false, onlyAttention: false, hideMine: false, hideRandom: false, classes: [], maxAge: 60, q: '' }
 
+const TYPES = { string: (v) => typeof v === 'string', boolean: (v) => typeof v === 'boolean', number: (v) => typeof v === 'number' && Number.isFinite(v) }
+
+/**
+ * Merge an untrusted settings object onto `base`: unknown keys are dropped and
+ * every known key must keep the type of its default, so a hand-edited or
+ * malicious file can't leave the app in a state that crashes on every render.
+ */
+export function sanitizeSettings(input, base) {
+  const out = { ...base }
+  if (!input || typeof input !== 'object') return out
+  const defaults = defaultSettings()
+  for (const [k, v] of Object.entries(input)) {
+    if (!(k in defaults) || k === 'filters' || k === 'presets' || k === 'watchedNets') continue
+    const d = defaults[k]
+    if (TYPES[typeof d]?.(v)) out[k] = v
+  }
+  if (input.filters && typeof input.filters === 'object') {
+    const f = { ...DEFAULT_FILTERS, ...base.filters }
+    for (const [k, v] of Object.entries(input.filters)) {
+      if (!(k in DEFAULT_FILTERS)) continue
+      if (k === 'classes') { if (Array.isArray(v)) f.classes = v.filter((x) => typeof x === 'string').slice(0, 64) }
+      else if (TYPES[typeof DEFAULT_FILTERS[k]]?.(v)) f[k] = v
+    }
+    out.filters = f
+  }
+  if (Array.isArray(input.watchedNets)) out.watchedNets = input.watchedNets.filter((x) => typeof x === 'string' && x.trim()).map((x) => x.slice(0, 64)).slice(0, 50)
+  if (Array.isArray(input.presets)) out.presets = input.presets.filter((x) => x && typeof x.name === 'string' && x.filters && typeof x.filters === 'object').slice(0, 30).map((x) => ({ name: x.name.slice(0, 40), filters: sanitizeSettings({ filters: x.filters }, { filters: DEFAULT_FILTERS }).filters }))
+  if (out.cooldown < 0) out.cooldown = 60
+  return out
+}
+
+/** One signature from an untrusted file, normalised to the catalog shape (or null). */
+export function sanitizeFleet(f) {
+  if (!f || typeof f.id !== 'string' || typeof f.name !== 'string' || !Array.isArray(f.rules)) return null
+  return {
+    id: f.id.slice(0, 80), name: String(f.name).slice(0, 80), enabled: f.enabled !== false, matchAny: f.matchAny !== false,
+    colorIndex: Number(f.colorIndex) || 0, minPeers: 0, peerWindowSec: 60, clusterByOui: false, sequentialMac: false,
+    notes: String(f.notes || '').slice(0, 2000), attentionNote: String(f.attentionNote || '').slice(0, 1000), builtIn: !!f.builtIn, kind: String(f.kind || 'OTHER').slice(0, 32),
+    rules: f.rules.filter((r) => r && typeof r.kind === 'string').slice(0, 500).map((r) => ({ kind: r.kind, text: String(r.text || '').slice(0, 128), companyId: Number(r.companyId) || 0, dataPrefixHex: String(r.dataPrefixHex || '').slice(0, 128), radio: r.radio === 'WIFI' || r.radio === 'BLE' ? r.radio : null, enabled: r.enabled !== false })),
+    ...(f.decode && Array.isArray(f.decode.fields) ? { decode: f.decode } : {}),
+  }
+}
+
 /** Settings safe to put in a file: drops `accepted` and the device-only Telegram fields. */
 function portableSettings(settings) {
   const out = { ...settings }
@@ -41,14 +84,15 @@ const DEVICE_ONLY_SETTINGS = ['tgEnabled', 'tgToken', 'tgChatId', 'bridgeUrl', '
 const TG_MIN_GAP_MS = 5000
 const TG_QUEUE_CAP = 20
 const HISTORY_CAP = 180
+const SIT_RADIO_CAP = 4000
+const SIT_PATH_CAP = 20000
 const PRUNE_MS = 10 * 60 * 1000
 
 class Engine {
   constructor() {
     this.listeners = new Set()
     this.version = 0
-    const saved = ls.get('settings', {})
-    this.settings = { ...defaultSettings(), ...saved, filters: { ...DEFAULT_FILTERS, ...(saved.filters || {}) } }
+    this.settings = sanitizeSettings(ls.get('settings', {}), defaultSettings())
     this.named = ls.get('named', {})
     this.watch = new Set(ls.get('watch', null) || [])
     this.watchInit = ls.get('watch', null) != null
@@ -131,8 +175,11 @@ class Engine {
     this.settings = { ...this.settings, ...patch }
     if (patch.lang) this.t = makeT(patch.lang)
     if (patch.density && this.sim) this.sim.density = patch.density
-    ls.set('settings', this.settings)
+    // Typing in search writes on every key: batch the localStorage write.
+    clearTimeout(this.saveTimer)
+    this.saveTimer = setTimeout(() => ls.set('settings', this.settings), 300)
     if ('location' in patch) this.syncGeo()
+    if ('source' in patch) this.pos = null
     this.emit()
   }
   setFilters(patch) { this.set({ filters: { ...this.settings.filters, ...patch } }) }
@@ -164,20 +211,14 @@ class Engine {
     const j = JSON.parse(text)
     const list = Array.isArray(j) ? j : j.fleets
     if (!Array.isArray(list)) throw new Error('no "fleets" array')
-    const clean = list.filter((f) => f && typeof f.id === 'string' && typeof f.name === 'string' && Array.isArray(f.rules)).map((f) => ({
-      id: f.id, name: String(f.name).slice(0, 80), enabled: f.enabled !== false, matchAny: f.matchAny !== false,
-      colorIndex: Number(f.colorIndex) || 0, minPeers: 0, peerWindowSec: 60, clusterByOui: false, sequentialMac: false,
-      notes: String(f.notes || ''), attentionNote: String(f.attentionNote || ''), builtIn: !!f.builtIn, kind: String(f.kind || 'OTHER'),
-      rules: f.rules.filter((r) => r && typeof r.kind === 'string').map((r) => ({ kind: r.kind, text: String(r.text || ''), companyId: Number(r.companyId) || 0, dataPrefixHex: String(r.dataPrefixHex || ''), radio: r.radio === 'WIFI' || r.radio === 'BLE' ? r.radio : null, enabled: r.enabled !== false })),
-      ...(f.decode && Array.isArray(f.decode.fields) ? { decode: f.decode } : {}),
-    }))
+    const clean = list.map(sanitizeFleet).filter(Boolean)
     const byId = new Map(this.fleets.map((f) => [f.id, f]))
     clean.forEach((f) => byId.set(f.id, f))
     this.saveFleets([...byId.values()])
     return clean.length
   }
   exportSignatures() {
-    return JSON.stringify({ format: 'fieldwatch-signatures', formatVersion: 1, exportedAt: new Date().toISOString(), appVersion: 'web-1.3.0', catalogVersion: this.catalogVersion, fleets: this.fleets }, null, 1)
+    return JSON.stringify({ format: 'fieldwatch-signatures', formatVersion: 1, exportedAt: new Date().toISOString(), appVersion: 'web-1.3.1', catalogVersion: this.catalogVersion, fleets: this.fleets }, null, 1)
   }
 
   // ---------- named radios ----------
@@ -211,8 +252,13 @@ class Engine {
       const isNew = !r
       if (!r) {
         r = { key, kind: s.kind, mac, firstSeen: now, history: [], count: 0, positions: [], name: '' }
-        r.randomized = s.kind === 'BLE' ? isRandomized(mac) : isRandomized(mac)
         r.vendor = ouiVendor(mac)
+        // BLE random addresses (resolvable private, static random…) don't reliably set the
+        // "locally administered" bit Wi-Fi uses. Trust the address type when the source
+        // reports it; otherwise treat a BLE address with no registered vendor as random.
+        r.randomized = s.kind === 'BLE'
+          ? (s.addrType === 'random' ? true : s.addrType === 'public' ? false : isRandomized(mac) || !r.vendor)
+          : isRandomized(mac)
         this.radios.set(key, r)
       }
       const nameChanged = (s.name || '') !== r.name
@@ -224,8 +270,7 @@ class Engine {
       })
       r.company = r.mfg[0] ? companyName(r.mfg[0].companyId) : null
       if (r.kind === 'BLE' && s.svcData?.length) {
-        const odid = s.svcData.find((x) => isOdidUuid(x.uuid))
-        const msgs = odid ? decodeAdvert(odid.dataHex) : []
+        const msgs = s.svcData.filter((x) => isOdidUuid(x.uuid)).flatMap((x) => decodeAdvert(x.dataHex))
         if (msgs.length) r.drone = mergeDrone(r.drone, msgs, now)
       }
       r.count++
@@ -237,7 +282,7 @@ class Engine {
         if (!last || distM(last, pos) > 15) { r.positions.push({ lat: pos.lat, lon: pos.lon, t: now }); if (r.positions.length > 40) r.positions.shift() }
         addSample(r, pos, now)
       }
-      this.mem.observe(r, cell, now)
+      this.placeMem().observe(r, cell, now)
       this.stats.packets++
       this.logRow(r, now)
       if (sit) this.sitRecord(sit, r, now)
@@ -317,8 +362,8 @@ class Engine {
     if (this.isMine(r) || this.hiddenKeys.has(r.key)) return
     // "New here only": skip devices this place already knows, and random phone
     // addresses that can never be recognised again (they would alert constantly).
-    if (this.settings.sentinelNewOnly && (!memoryKey(r) || this.mem.familiar(r, cellOf(this.pos)))) return
-    const nm = this.displayName(r) || r.mac
+    if (this.settings.sentinelNewOnly && (!memoryKey(r) || this.placeMem().familiar(r, cellOf(this.pos)))) return
+    const nm = this.displayName(r) || maskMac(r.mac, this.settings.privacy)
     this.toast(`${this.t('newDevice')}: ${nm}`, 'info', r.key)
     this.notifyTelegram(`${this.t('newDevice')}: ${this.tgName(r)} (${r.kind}) @ ${r.rssi} dBm`)
   }
@@ -379,8 +424,13 @@ class Engine {
       const prev = findPredecessor(all, r, now)
       if (!prev) continue
       linkRadios(prev, r)
-      // A device marked Mine or named stays so after it changes address.
-      if (this.named[prev.key] && !this.named[r.key]) this.setNamed(r.key, { ...this.named[prev.key] })
+      // A device marked Mine or named stays so after it changes address. Move the
+      // entry rather than copy it, so rotations don't pile up in storage.
+      if (this.named[prev.key] && !this.named[r.key]) {
+        this.named[r.key] = this.named[prev.key]
+        delete this.named[prev.key]
+        ls.set('named', this.named)
+      }
     }
   }
 
@@ -407,11 +457,19 @@ class Engine {
   }
 
   currentCell() { return cellOf(this.pos) }
+  /** The simulator gets its own throwaway memory so demo devices never mix with real places. */
+  placeMem() {
+    if (this.settings.source !== 'demo') return this.mem
+    return this.demoMem || (this.demoMem = new PlaceMemory())
+  }
   /** Teach the current place: every device heard in the last minute becomes familiar here. */
   learnPlace(now = Date.now()) {
     const recent = [...this.radios.values()].filter((r) => now - r.lastSeen < 60000)
-    const n = this.mem.learn(recent, this.currentCell(), now)
-    idb.set('places', this.mem.toJSON())
+    // Never learn trackers or anything already travelling with you as "familiar".
+    const safe = recent.filter((r) => !trackerState(r, now) && !this.coTravel(r))
+    const mem = this.placeMem()
+    const n = mem.learn(safe, this.currentCell(), now)
+    if (mem === this.mem) idb.set('places', this.mem.toJSON())
     this.emit()
     return n
   }
@@ -422,16 +480,17 @@ class Engine {
     const fresh = []
     for (const r of this.radios.values()) {
       if (now - r.lastSeen > 60000 || this.isMine(r) || !memoryKey(r)) continue
-      ;(this.mem.familiar(r, cell) ? familiar : fresh).push(r)
+      ;(this.placeMem().familiar(r, cell) ? familiar : fresh).push(r)
     }
     fresh.sort((a, b) => b.rssi - a.rssi)
     return { cell, located: cell !== NO_PLACE, familiar, fresh }
   }
   /** Devices remembered in places at least 1 km apart, excluding Mine. */
   multiPlace() {
-    return this.mem.multiPlace({ exclude: (key) => !!this.named[key]?.mine })
+    return this.placeMem().multiPlace({ exclude: (key) => !!this.named[key]?.mine })
   }
   forgetPlaces() {
+    this.demoMem = null
     this.mem = new PlaceMemory()
     idb.set('places', this.mem.toJSON())
     this.emit()
@@ -484,7 +543,7 @@ class Engine {
     const sig = watchedNet ? `${t('alertWatched')}: ${watchedNet}` : watchHit ? this.fleetById(watchHit)?.name : named?.name || t('alertOn')
     // Unicode isolates keep Latin names and negative numbers in order inside Arabic sentences.
     const iso = (v) => '\u2068' + v + '\u2069'
-    const body = t('alertBody', { sig: iso(sig), name: iso(this.displayName(r) || r.mac), rssi: '\u2066' + r.rssi + '\u2069' })
+    const body = t('alertBody', { sig: iso(sig), name: iso(this.displayName(r) || maskMac(r.mac, this.settings.privacy)), rssi: '\u2066' + r.rssi + '\u2069' })
     this.toast(body, 'alert', r.key)
     if (this.settings.sound) this.beep(880, 0.12, 2)
     if (this.settings.vibrate) try { navigator.vibrate?.([120, 60, 120]) } catch { /* ignore */ }
@@ -621,6 +680,8 @@ class Engine {
   renameSit(id, name) { const s = this.sits.find((x) => x.id === id); if (s) { s.name = name; this.persistSits(); this.emit() } }
   sitRecord(s, r, now) {
     let e = s.radios[r.key]
+    if (!e && Object.keys(s.radios).length >= SIT_RADIO_CAP) return
+    this.sitsDirty = true
     if (!e) e = s.radios[r.key] = { key: r.key, kind: r.kind, mac: r.mac, name: r.name, vendor: r.vendor, first: now, last: now, maxRssi: r.rssi, minRssi: r.rssi, sum: 0, count: 0, channel: r.channel || 0, fleetIds: [], pts: [], security: r.security || '' }
     e.last = now
     e.name = r.name || e.name
@@ -640,9 +701,9 @@ class Engine {
     const s = this.activeSit()
     if (!s || !this.pos) return
     const last = s.path[s.path.length - 1]
-    if (!last || distM(last, this.pos) > 8) s.path.push({ lat: this.pos.lat, lon: this.pos.lon, t: now })
+    if ((!last || distM(last, this.pos) > 8) && s.path.length < SIT_PATH_CAP) { s.path.push({ lat: this.pos.lat, lon: this.pos.lon, t: now }); this.sitsDirty = true }
   }
-  persistSits() { idb.set('sits', this.sits) }
+  persistSits() { this.sitsDirty = false; idb.set('sits', this.sits) }
 
   // ---------- geolocation ----------
   syncGeo() {
@@ -662,7 +723,11 @@ class Engine {
 
   // ---------- scanning ----------
   async start() {
-    if (this.running) return
+    if (this.running || this.starting) return
+    this.starting = true
+    try { await this.startSource() } finally { this.starting = false }
+  }
+  async startSource() {
     this.ac()
     const src = this.settings.source
     this.stats.started = Date.now()
@@ -675,6 +740,7 @@ class Engine {
     if (src === 'replay' && !this.replay) { this.toast(this.t('sourceReplayHint')); return }
     this.running = true
     this.syncGeo()
+    clearInterval(this.timer)
     this.timer = setInterval(() => this.tick(), 1000)
     this.tick()
     this.emit()
@@ -682,13 +748,22 @@ class Engine {
   stop() {
     this.running = false
     clearInterval(this.timer)
+    this.timer = null
+    this.pos = null
     try { this.bleScan?.stop() } catch { /* ignore */ }
     this.bleScan = null
     this.stopBridge()
     this.syncGeo()
     idb.set('log', this.log)
     this.persistSits()
+    this.savePlaces()
     this.emit()
+  }
+  savePlaces() {
+    if (!this.mem.dirty) return
+    this.mem.dirty = false
+    this.mem.prune()
+    idb.set('places', this.mem.toJSON())
   }
   tick() {
     const now = Date.now()
@@ -709,14 +784,16 @@ class Engine {
     }
     this.sitPath(now)
     this.linkRotations(now)
-    if (now % 5000 < 1000) this.checkTrackers(now)
+    // Elapsed-time gates rather than `now % N`: background tabs only wake every
+    // minute or so, and a modulo test would then almost never fire.
+    if (now - (this.lastTrackerCheck || 0) >= 5000) { this.lastTrackerCheck = now; this.checkTrackers(now) }
     this.prune(now)
-    if (now % 15000 < 1000) {
-      idb.set('log', this.log)
-      this.persistSits()
-      this.mem.prune()
-      if (this.mem.dirty) { this.mem.dirty = false; idb.set('places', this.mem.toJSON()) }
+    if (now - (this.lastSave || 0) >= 15000) {
+      this.lastSave = now
+      if (this.sitsDirty) this.persistSits()
+      this.savePlaces()
     }
+    if (now - (this.lastLogSave || 0) >= 60000) { this.lastLogSave = now; idb.set('log', this.log) }
     this.emit()
   }
 
@@ -763,8 +840,9 @@ class Engine {
     try { ws = new WebSocket(url) } catch { this.bridgeState = 'error'; this.toast(this.t('bridgeFailed'), 'warn'); this.emit(); return }
     this.bridge = ws
     this.bridgeState = 'connecting'
-    ws.onopen = () => { this.bridgeState = 'open'; this.emit() }
+    ws.onopen = () => { if (this.bridge === ws) { this.bridgeState = 'open'; this.emit() } }
     ws.onmessage = (ev) => {
+      if (this.bridge !== ws) return
       const msg = parseBridgeMessage(ev.data)
       if (msg?.type === 'hello') { this.bridgeInfo = msg; this.emit() }
       else if (msg?.type === 'sightings') {
@@ -773,7 +851,9 @@ class Engine {
       }
     }
     ws.onclose = (ev) => {
-      if (this.bridge === ws) this.bridge = null
+      // A socket closed by an earlier stop() can report after a new start(); ignore it.
+      if (this.bridge !== ws) return
+      this.bridge = null
       if (ev.code === 1008) { this.bridgeState = 'denied'; this.bridgeWanted = false; this.toast(this.t('bridgeDenied'), 'warn') }
       else if (this.bridgeWanted && this.running) {
         this.bridgeState = 'retrying'
@@ -786,13 +866,16 @@ class Engine {
   stopBridge() {
     this.bridgeWanted = false
     clearTimeout(this.bridgeRetry)
-    try { this.bridge?.close() } catch { /* ignore */ }
+    const ws = this.bridge
+    if (ws) { ws.onopen = ws.onmessage = ws.onclose = null }
+    try { ws?.close() } catch { /* ignore */ }
     this.bridge = null
     if (this.bridgeState) this.bridgeState = 'closed'
   }
 
   // ---------- replay ----------
   loadReplay(text) {
+    if (this.running) this.stop()
     const rows = parseLog(text)
     if (!rows.length) throw new Error('no rows')
     rows.sort((a, b) => a.ts - b.ts)
@@ -823,9 +906,9 @@ class Engine {
   importSettings(text) {
     const j = JSON.parse(text)
     if (j.format !== 'fieldwatch-web-settings') throw new Error('not a Fieldwatch web settings file')
-    if (j.settings && typeof j.settings === 'object') this.set({ ...portableSettings(j.settings), accepted: true })
-    if (j.named && typeof j.named === 'object') { this.named = j.named; ls.set('named', this.named) }
-    if (Array.isArray(j.watch)) { this.watch = new Set(j.watch); ls.set('watch', j.watch) }
+    if (j.settings && typeof j.settings === 'object') this.set({ ...sanitizeSettings(portableSettings(j.settings), portableSettings(this.settings)), accepted: true })
+    if (j.named && typeof j.named === 'object') { this.named = sanitizeNamed(j.named); ls.set('named', this.named) }
+    if (Array.isArray(j.watch)) { this.watch = new Set(j.watch.filter((x) => typeof x === 'string')); ls.set('watch', [...this.watch]) }
     this.emit()
   }
   exportAll() {
@@ -838,13 +921,14 @@ class Engine {
   async importAll(text) {
     const j = JSON.parse(text)
     if (j.format !== 'fieldwatch-web-backup') throw new Error('not a Fieldwatch backup file')
-    if (j.settings && typeof j.settings === 'object') this.set({ ...portableSettings(j.settings), accepted: true })
-    if (j.named && typeof j.named === 'object') { this.named = j.named; ls.set('named', this.named) }
-    if (Array.isArray(j.watch)) { this.watch = new Set(j.watch); ls.set('watch', j.watch) }
-    if (Array.isArray(j.fleets) && j.fleets.length) await this.saveFleets(j.fleets)
-    if (Array.isArray(j.sits)) { this.sits = j.sits; await idb.set('sits', this.sits) }
-    if (Array.isArray(j.log)) { this.log = j.log.slice(0, LOG_CAP); await idb.set('log', this.log) }
-    if (j.places && typeof j.places === 'object') { this.mem = new PlaceMemory(j.places); await idb.set('places', this.mem.toJSON()) }
+    if (j.settings && typeof j.settings === 'object') this.set({ ...sanitizeSettings(portableSettings(j.settings), portableSettings(this.settings)), accepted: true })
+    if (j.named && typeof j.named === 'object') { this.named = sanitizeNamed(j.named); ls.set('named', this.named) }
+    if (Array.isArray(j.watch)) { this.watch = new Set(j.watch.filter((x) => typeof x === 'string')); ls.set('watch', [...this.watch]) }
+    const fleets = Array.isArray(j.fleets) ? j.fleets.map(sanitizeFleet).filter(Boolean) : []
+    if (fleets.length) await this.saveFleets(fleets)
+    if (Array.isArray(j.sits)) { this.sits = j.sits.filter(validSit); await idb.set('sits', this.sits) }
+    if (Array.isArray(j.log)) { this.log = j.log.filter((x) => x && typeof x === 'object').slice(-LOG_CAP); await idb.set('log', this.log) }
+    if (j.places && typeof j.places === 'object') { this.mem = new PlaceMemory(sanitizePlaces(j.places)); await idb.set('places', this.mem.toJSON()) }
     const open = this.sits.find((s) => !s.end)
     this.activeSitId = open ? open.id : null
     this.emit()
@@ -856,6 +940,34 @@ class Engine {
     await idb.clear()
     location.reload()
   }
+}
+
+function sanitizeNamed(named) {
+  const out = {}
+  for (const [k, v] of Object.entries(named)) {
+    if (!v || typeof v !== 'object' || !/^(WIFI|BLE):/.test(k)) continue
+    out[k] = { name: typeof v.name === 'string' ? v.name.slice(0, 80) : '', mine: !!v.mine, alert: !!v.alert, notes: typeof v.notes === 'string' ? v.notes.slice(0, 2000) : '' }
+  }
+  return out
+}
+const finite = (p) => p && Number.isFinite(p.lat) && Number.isFinite(p.lon)
+function validSit(s) {
+  if (!s || typeof s.id !== 'string' || !Number.isFinite(s.start) || !s.radios || typeof s.radios !== 'object') return false
+  s.name = String(s.name || s.id).slice(0, 80)
+  s.path = Array.isArray(s.path) ? s.path.filter(finite) : []
+  s.floods = Array.isArray(s.floods) ? s.floods : []
+  for (const r of Object.values(s.radios)) r.pts = Array.isArray(r?.pts) ? r.pts.filter(finite) : []
+  return true
+}
+function sanitizePlaces(p) {
+  const devices = {}
+  for (const [k, d] of Object.entries(p.devices || {})) {
+    if (!d || typeof d !== 'object' || !d.cells || typeof d.cells !== 'object') continue
+    const cells = {}
+    for (const [c, v] of Object.entries(d.cells)) if (v && Array.isArray(v.days)) cells[c] = { first: Number(v.first) || 0, last: Number(v.last) || 0, days: v.days.filter((x) => typeof x === 'string').slice(-7), ...(v.learned ? { learned: true } : {}) }
+    devices[k] = { kind: d.kind === 'WIFI' ? 'WIFI' : 'BLE', name: typeof d.name === 'string' ? d.name.slice(0, 64) : '', mac: typeof d.mac === 'string' ? d.mac.slice(0, 17) : '', cls: typeof d.cls === 'string' ? d.cls : null, last: Number(d.last) || 0, cells }
+  }
+  return { devices }
 }
 
 function isOdidUuid(u) {
@@ -907,19 +1019,22 @@ export function parseLog(text) {
     let o
     if (line.trim().startsWith('{')) {
       try { o = JSON.parse(line) } catch { continue }
-      o = { ts: Number(o.ts), kind: o.kind, mac: o.mac, name: o.name || '', rssi: Number(o.rssi), channel: Number(o.channel) || 0, freq: Number(o.freq) || 0, mfgId: o.mfg, raw: o.raw, uuids: String(o.uuids || '').split(/[,|]/).filter(Boolean), lat: o.lat, lon: o.lon, vendorIe: String(o.vendor_ie || '').split('|').filter(Boolean), hidden: !!o.hidden }
+      o = { ts: Number(o.ts), kind: o.kind, mac: o.mac, name: o.name || '', rssi: Number(o.rssi), channel: Number(o.channel) || 0, freq: Number(o.freq) || 0, mfgId: typeof o.mfg === 'string' ? (o.mfg ? parseInt(o.mfg, 16) : null) : (Number.isFinite(o.mfg) ? o.mfg : null), raw: o.raw, rand: !!o.rand, uuids: String(o.uuids || '').split(/[,|]/).filter(Boolean), lat: o.lat, lon: o.lon, vendorIe: String(o.vendor_ie || '').split('|').filter(Boolean), hidden: !!o.hidden }
     } else {
       const c = splitCsv(line)
       if (c[0] === 'timestamp' || c.includes('kind') && c.includes('mac')) { header = c; continue }
       const g = (k) => c[header.indexOf(k)] ?? ''
       const mfgHex = g('mfg')
-      o = { ts: Number(g('timestamp')), kind: g('kind'), mac: g('mac'), name: g('name').replace(/^'/, ''), rssi: Number(g('rssi')), channel: Number(g('channel')) || 0, freq: Number(g('freq')) || 0, mfgId: mfgHex ? parseInt(mfgHex, 16) : null, raw: g('raw'), uuids: g('uuids').split('|').filter(Boolean), lat: g('lat') ? Number(g('lat')) : null, lon: g('lon') ? Number(g('lon')) : null, vendorIe: g('vendor_ie').split('|').filter(Boolean), hidden: g('flags').includes('HIDDEN') }
+      o = { ts: Number(g('timestamp')), kind: g('kind'), mac: g('mac'), name: g('name').replace(/^'/, ''), rssi: Number(g('rssi')), channel: Number(g('channel')) || 0, freq: Number(g('freq')) || 0, mfgId: mfgHex ? parseInt(mfgHex, 16) : null, raw: g('raw'), uuids: g('uuids').split('|').filter(Boolean), lat: g('lat') ? Number(g('lat')) : null, lon: g('lon') ? Number(g('lon')) : null, vendorIe: g('vendor_ie').split('|').filter(Boolean), hidden: g('flags').includes('HIDDEN'), rand: g('flags').includes('RAND') || g('rand') === 'true' }
     }
     if (!o.ts || (o.kind !== 'WIFI' && o.kind !== 'BLE') || !o.mac) continue
     rows.push({
       ts: o.ts, kind: o.kind, mac: o.mac, name: o.name, hidden: o.hidden, rssi: Number.isFinite(o.rssi) ? o.rssi : -100, channel: o.channel, freq: o.freq,
       mfg: o.mfgId != null && !Number.isNaN(o.mfgId) ? [{ companyId: o.mfgId, dataHex: hexOnly(o.raw) }] : [],
-      uuids: o.uuids, svcData: [], vendorIe: o.vendorIe, lat: o.lat, lon: o.lon,
+      uuids: o.uuids, svcData: [], vendorIe: o.vendorIe,
+      lat: Number.isFinite(Number(o.lat)) && o.lat !== null && o.lat !== '' ? Number(o.lat) : null,
+      lon: Number.isFinite(Number(o.lon)) && o.lon !== null && o.lon !== '' ? Number(o.lon) : null,
+      ...(o.kind === 'BLE' && o.rand ? { addrType: 'random' } : {}),
     })
   }
   return rows

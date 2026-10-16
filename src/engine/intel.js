@@ -18,9 +18,10 @@ export function advFingerprint(r) {
   parts.push([...(r.uuids || [])].map((u) => String(u).toUpperCase()).sort().join(','))
   parts.push([...(r.svcData || [])].map((s) => String(s.uuid).toUpperCase()).sort().join(','))
   parts.push((r.mfg || []).map((m) => `${m.companyId}/${String(m.dataHex || '').slice(0, 2).toUpperCase()}`).sort().join(','))
-  const fp = parts.join('|')
-  // A bare manufacturer ID with no name/services is too common to link on.
-  return fp === '|||' ? null : fp
+  // Manufacturer data alone (every iPhone sends Apple 0x10…) is far too common to
+  // tell two devices apart: require a name, a service UUID or service data.
+  if (!parts[0] && !parts[1] && !parts[2]) return null
+  return parts.join('|')
 }
 
 export const LINK_WINDOW_MS = 20000

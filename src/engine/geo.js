@@ -24,7 +24,7 @@ export const maskCoord = (v, on) => (on ? '••.•••' : v?.toFixed(5))
 /** Spreadsheet-safe CSV cell (port of CsvCells.plain). */
 export function csvCell(v) {
   let s = v == null ? '' : String(v)
-  if (/^[=+\-@]/.test(s) && !/^-?\d+(\.\d+)?$/.test(s)) s = "'" + s
+  if (/^[=+\-@\t\r]/.test(s) && !/^-?\d+(\.\d+)?$/.test(s)) s = "'" + s
   if (/[",\n\r]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"'
   return s
 }

@@ -8,6 +8,8 @@ createRoot(document.getElementById('root')).render(<App />)
 
 window.addEventListener('pagehide', () => { if (engine.running) engine.stop() })
 
-if ('serviceWorker' in navigator && import.meta.env.PROD && location.protocol === 'https:') {
-  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}))
+// The Android app (Capacitor) already ships every file inside the APK, so it needs no service worker.
+const native = !!window.Capacitor?.isNativePlatform?.()
+if ('serviceWorker' in navigator && import.meta.env.PROD && location.protocol === 'https:' && !native) {
+  navigator.serviceWorker.register('sw.js').catch(() => {})
 }
