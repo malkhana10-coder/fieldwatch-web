@@ -1,4 +1,5 @@
-import { useEngine, Icon, Glyph, Bars, ago, CLASS_ICON } from '../ui.jsx'
+import { useMemo, useState } from 'react'
+import { useEngine, Icon, Glyph, Bars, ago, tickOf } from '../ui.jsx'
 import { radioColor } from './Live.jsx'
 import { CLASSES } from '../i18n.js'
 import { maskMac } from '../engine/geo.js'
@@ -8,7 +9,7 @@ import { livePrompt } from '../engine/ai.js'
 function Bar({ label, n, max, color }) {
   return (
     <div className="bar-row">
-      <span className="ellipsis" title={label}>{label}</span>
+      <span className="ellipsis" dir="auto" title={label}>{label}</span>
       <div className="bar-track"><div className="bar-fill" style={{ width: `${(n / Math.max(1, max)) * 100}%`, background: color }} /></div>
       <b style={{ textAlign: 'end' }}>{n}</b>
     </div>
@@ -19,6 +20,7 @@ export function Dashboard({ onOpen }) {
   const e = useEngine()
   const t = e.t
   const now = Date.now()
+  const [showAllHidden, setShowAllHidden] = useState(false)
   const maxAge = e.settings.filters.maxAge * 1000
   const radios = [...e.radios.values()]
   const active = radios.filter((r) => now - r.lastSeen < maxAge)
@@ -45,13 +47,26 @@ export function Dashboard({ onOpen }) {
 
   // activity: log rows per 30s bucket, last 5 min
   const SPAN = 5 * 60 * 1000, BIN = 30 * 1000, N = 10
-  const bins = new Array(N).fill(0)
-  for (const row of e.log) { const i = Math.floor((row.ts - (now - SPAN)) / BIN); if (i >= 0 && i < N) bins[i]++ }
+  // The log holds up to 6000 rows: bin it at most every 5 s, scanning back from the newest row only.
+  const bins = useMemo(() => {
+    const out = new Array(N).fill(0)
+    const from = now - SPAN
+    for (let j = e.log.length - 1; j >= 0; j--) {
+      const ts = e.log[j].ts
+      if (ts < from - BIN * 2) break
+      const i = Math.floor((ts - from) / BIN)
+      if (i >= 0 && i < N) out[i]++
+    }
+    return out
+  }, [tickOf(5000, now), e.log.length, e.log[e.log.length - 1]?.ts])
   const maxBin = Math.max(1, ...bins)
 
   const sit = e.activeSit()
-  const track = e.trackingAssessment(now)
-  const hidden = e.hiddenDevices(now)
+  // Detectors walk every radio; recompute at most every 3 s (rows keep live RSSI).
+  const slow = tickOf(3000, now)
+  const track = useMemo(() => e.trackingAssessment(now), [slow, e.radios.size, e.named])
+  const hidden = useMemo(() => e.hiddenDevices(now), [slow, e.radios.size, e.named])
+  const HIDDEN_MAX = 8
   const empty = !radios.length && !e.log.length
 
   return (
@@ -135,11 +150,11 @@ export function Dashboard({ onOpen }) {
               <button key={r.key} className="sig" style={{ width: '100%', background: 'none', border: 0, borderBlockStart: '1px solid var(--line)', textAlign: 'start' }} onClick={() => onOpen(r.key)}>
                 <Glyph r={r} color={radioColor(e, r)} />
                 <div className="grow" style={{ minWidth: 0 }}>
-                  <div className="row" style={{ gap: 6 }}>
-                    <b className="ellipsis">{e.displayName(r) || <span className="muted">{t('unknown')}</span>}</b>
-                    <span className="tag attn">{r.fleetIds.map((id) => e.fleetById(id)?.name).filter(Boolean).join(' + ')}</span>
+                  <div className="row wrap" style={{ gap: 6 }}>
+                    <b className="ellipsis" dir="auto">{e.displayName(r) || <span className="muted">{t('unknown')}</span>}</b>
+                    <span className="tag attn"><bdi>{r.fleetIds.map((id) => e.fleetById(id)?.name).filter(Boolean).join(' + ')}</bdi></span>
                   </div>
-                  <div className="tiny faint ellipsis">{maskMac(r.mac, e.settings.privacy)} · {r.kind} · {ago(t, r.lastSeen, now)}</div>
+                  <div className="tiny faint ellipsis"><span className="mono">{maskMac(r.mac, e.settings.privacy)}</span> · {r.kind} · {ago(t, r.lastSeen, now)}</div>
                 </div>
                 <div className="rssi"><b className="ltr">{r.rssi}</b><Bars rssi={r.rssi} /></div>
               </button>
@@ -156,8 +171,8 @@ export function Dashboard({ onOpen }) {
               <button key={r.key} className="sig" style={{ width: '100%', background: 'none', border: 0, borderBlockStart: '1px solid var(--line)', textAlign: 'start' }} onClick={() => onOpen(r.key)}>
                 <Glyph r={r} color={radioColor(e, r)} />
                 <div className="grow" style={{ minWidth: 0 }}>
-                  <div className="row" style={{ gap: 6 }}><b className="ellipsis">{e.displayName(r) || maskMac(r.mac, e.settings.privacy)}</b><span className="tag warn">{t(why)}</span></div>
-                  <div className="tiny faint ellipsis">{r.fleetIds.map((id) => e.fleetById(id)?.name).filter(Boolean).join(' + ') || r.vendor || r.kind}</div>
+                  <div className="row wrap" style={{ gap: 6 }}>{e.displayName(r) ? <b className="ellipsis" dir="auto">{e.displayName(r)}</b> : <b className="mono">{maskMac(r.mac, e.settings.privacy)}</b>}<span className="tag tag-long warn">{t(why)}</span></div>
+                  <div className="tiny faint ellipsis"><bdi dir="auto">{r.fleetIds.map((id) => e.fleetById(id)?.name).filter(Boolean).join(' + ') || r.vendor || r.kind}</bdi></div>
                 </div>
                 <div className="rssi"><b className="ltr">{r.rssi}</b><Bars rssi={r.rssi} /></div>
               </button>
@@ -168,16 +183,21 @@ export function Dashboard({ onOpen }) {
           <div className="card card-pad">
             <h3>{t('hiddenDevices')} ({hidden.length})</h3>
             <div className="small muted" style={{ marginBottom: 6 }}>{t('hiddenDevicesHint')}</div>
-            {hidden.length ? hidden.map(({ r, why }) => (
+            {hidden.length ? (showAllHidden ? hidden : hidden.slice(0, HIDDEN_MAX)).map(({ r, why }) => (
               <button key={r.key} className="sig" style={{ width: '100%', background: 'none', border: 0, borderBlockStart: '1px solid var(--line)', textAlign: 'start' }} onClick={() => onOpen(r.key)}>
                 <Glyph r={r} color={radioColor(e, r)} />
                 <div className="grow" style={{ minWidth: 0 }}>
-                  <div className="row" style={{ gap: 6 }}><b className="ellipsis">{r.hidden ? t('hidden') : maskMac(r.mac, e.settings.privacy)}</b><span className="tag attn">{t(why)}</span></div>
-                  <div className="tiny faint ellipsis">{r.kind} · {r.vendor || t('unknown')} · {ago(t, r.lastSeen, now)}</div>
+                  <div className="row wrap" style={{ gap: 6 }}>{r.hidden ? <b>{t('hidden')}</b> : <b className="mono">{maskMac(r.mac, e.settings.privacy)}</b>}<span className="tag attn">{t(why)}</span></div>
+                  <div className="tiny faint ellipsis">{r.hidden && <><span className="mono">{maskMac(r.mac, e.settings.privacy)}</span> · </>}{r.kind} · {r.vendor ? <bdi className="trunc" dir="auto">{r.vendor}</bdi> : t('unknown')} · {ago(t, r.lastSeen, now)}</div>
                 </div>
                 <div className="rssi"><b className="ltr">{r.rssi}</b><Bars rssi={r.rssi} /></div>
               </button>
             )) : <span className="faint small">—</span>}
+            {hidden.length > HIDDEN_MAX && (
+              <button className="btn sm ghost" style={{ marginTop: 6 }} aria-expanded={showAllHidden} onClick={() => setShowAllHidden(!showAllHidden)}>
+                {showAllHidden ? t('showLess') : t('showAll', { n: hidden.length })}
+              </button>
+            )}
           </div>
 
           <div className="grid-2">

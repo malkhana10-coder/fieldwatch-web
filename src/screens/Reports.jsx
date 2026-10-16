@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, Fragment } from 'react'
 import { useEngine, Icon, Sheet, fmtDur, copyText, ConfirmButton } from '../ui.jsx'
 import { debrief, compareSits, sitCsv, sitGpx, sitKml, sitWigle, logCsv, aiPrompt } from '../engine/reports.js'
 import { download, inViewer } from '../engine/storage.js'
@@ -8,7 +8,7 @@ import { AiPanel } from './Intel.jsx'
 function Bar({ label, n, max, color }) {
   return (
     <div className="bar-row">
-      <span className="ellipsis">{label}</span>
+      <span className="ellipsis" dir="auto" title={label}>{label}</span>
       <div className="bar-track"><div className="bar-fill" style={{ width: `${(n / Math.max(1, max)) * 100}%`, background: color }} /></div>
       <b style={{ textAlign: 'end' }}>{n}</b>
     </div>
@@ -38,8 +38,8 @@ function PathPlot({ sit, privacy }) {
       <path d={pts.map((p, i) => `${i ? 'L' : 'M'}${X(p.lon).toFixed(1)},${Y(p.lat).toFixed(1)}`).join('')} fill="none" stroke="var(--accent)" strokeWidth="2.5" strokeLinejoin="round" strokeDasharray="1 0" />
       {pts[0] && <circle cx={X(pts[0].lon)} cy={Y(pts[0].lat)} r="6" fill="var(--surface)" stroke="var(--accent)" strokeWidth="2" />}
       {pts.length > 1 && <circle cx={X(pts[pts.length - 1].lon)} cy={Y(pts[pts.length - 1].lat)} r="6" fill="var(--accent)" />}
-      {marks.map((r) => r.pts.map((p, i) => <path key={r.key + i} d={`M${X(p.lon)},${Y(p.lat) - 6} l6,6 -6,6 -6,-6z`} fill="var(--danger)" opacity=".85"><title>{r.name || r.mac}</title></path>))}
-      {privacy && <text x={W - 10} y={18} textAnchor="end" fontSize="11" fill="var(--text-3)">privacy</text>}
+      {marks.map((r) => r.pts.map((p, i) => <path key={r.key + i} d={`M${X(p.lon)},${Y(p.lat) - 6} l6,6 -6,6 -6,-6z`} fill="var(--danger)" opacity=".85"><title>{r.name || maskMac(r.mac, privacy)}</title></path>))}
+      {privacy && <text x={W - 10} y={18} textAnchor="end" fontSize="11" fill="var(--text-3)">{t('privacyTag')}</text>}
     </svg>
   )
 }
@@ -52,17 +52,18 @@ function Debrief({ sit, onClose }) {
   const [prompt, setPrompt] = useState(null)
   const max = d.byClass[0]?.[1] || 1
   const fname = sit.name.replace(/[^\w؀-ۿ-]+/g, '_').slice(0, 40)
+  const arrow = t.dir === 'rtl' ? '←' : '→'
   return (
     <Sheet title={`${t('debrief')} · ${sit.name}`} onClose={onClose} className="debrief">
       <div className="stack">
         <div className="print-only report-head">
           <div style={{ fontSize: 22, fontWeight: 800 }}>{t('appName')} — {t('report')}</div>
           <div style={{ fontSize: 15 }}>{sit.name}</div>
-          <div className="small muted">{t.date(sit.start)} → {sit.end ? t.date(sit.end) : t('sitRunning')} · {t('printGenerated')} {t('appName')} Web · {t('catalogVersion')} #{e.catalogVersion}</div>
+          <div className="small muted">{t.date(sit.start)} {arrow} {sit.end ? t.date(sit.end) : t('sitRunning')} · {t('printGenerated')} {t('appName')} Web · {t('catalogVersion')} #{e.catalogVersion}</div>
         </div>
         <div className="row wrap no-print">
           <button className="btn sm" onClick={() => download(fname + '.csv', sitCsv(sit, e, privacy), 'text/csv')}><Icon name="download" size={14} />{t('exportCsv')}</button>
-          <button className="btn sm" onClick={() => download(fname + '.json', JSON.stringify(sit, null, 1), 'application/json')}><Icon name="download" size={14} />{t('exportJson')}</button>
+          <button className="btn sm" disabled={privacy} title={privacy ? t('privacyHint') : undefined} onClick={() => download(fname + '.json', JSON.stringify(sit, null, 1), 'application/json')}><Icon name="download" size={14} />{t('exportJson')}</button>
           <button className="btn sm" disabled={privacy} onClick={() => download(fname + '.gpx', sitGpx(sit, e), 'application/gpx+xml')}>{t('exportGpx')}</button>
           <button className="btn sm" disabled={privacy} onClick={() => download(fname + '.kml', sitKml(sit, e), 'application/vnd.google-earth.kml+xml')}>{t('exportKml')}</button>
           <button className="btn sm" disabled={privacy} onClick={() => download(fname + '-wigle.csv', sitWigle(sit), 'text/csv')}>{t('exportWigle')}</button>
@@ -78,7 +79,7 @@ function Debrief({ sit, onClose }) {
           <div className="stat"><b>{fmtDur(d.duration)}</b><span>{t('duration')}</span></div>
         </div>
         <div className="small muted">
-          {t.date(sit.start)} → {sit.end ? t.date(sit.end) : t('sitRunning')} · Wi-Fi {d.wifi} · BLE {d.ble} · {t('path')} {Math.round(d.pathLen)} {t('m')}
+          {t.date(sit.start)} {arrow} {sit.end ? t.date(sit.end) : t('sitRunning')} · Wi-Fi {d.wifi} · BLE {d.ble} · {t('path')} <span className="nowrap">{Math.round(d.pathLen)} {t('m')}</span>
           {d.floods.length > 0 && <> · {t('floodTitle')}: {d.floods.length} ({d.floodHidden})</>}
         </div>
         <div className="card card-pad"><h3>{t('path')}</h3><PathPlot sit={sit} privacy={privacy} /></div>
@@ -101,8 +102,8 @@ function Debrief({ sit, onClose }) {
           <h3>{t('attention')} ({d.attention.length})</h3>
           {d.attention.map(({ r, fleets }) => (
             <div key={r.key} style={{ padding: '8px 0', borderBlockEnd: '1px solid var(--line)' }}>
-              <div className="row wrap"><b>{fleets.map((f) => f.name).join(' + ')}</b><span className={'tag ' + (r.kind === 'WIFI' ? 'wifi' : 'ble')}>{r.kind}</span><span className="mono small faint">{maskMac(r.mac, privacy)}</span></div>
-              <div className="small muted">{r.name || '—'} · max <span className="ltr">{r.maxRssi}</span> dBm · {fmtDur(r.last - r.first)} · {t.time(r.first)}</div>
+              <div className="row wrap"><b dir="auto">{fleets.map((f) => f.name).join(' + ')}</b><span className={'tag ' + (r.kind === 'WIFI' ? 'wifi' : 'ble')}>{r.kind}</span><span className="mono small faint">{maskMac(r.mac, privacy)}</span></div>
+              <div className="small muted"><bdi>{r.name || '—'}</bdi> · {t('maxLabel')} <span className="ltr">{r.maxRssi} dBm</span> · {fmtDur(r.last - r.first)} · {t.time(r.first)}</div>
             </div>
           ))}
           {!d.attention.length && <span className="faint">—</span>}
@@ -112,14 +113,14 @@ function Debrief({ sit, onClose }) {
           <div className="small muted" style={{ marginBottom: 6 }}>{t('coTravelHint', { m: 200 })}</div>
           {d.coTravel.map(({ r, spread }) => (
             <div key={r.key} className="row wrap" style={{ padding: '6px 0', borderBlockEnd: '1px solid var(--line)' }}>
-              <b>{r.name || (r.fleetIds.map(d.fleetName).join('+')) || '—'}</b>
+              <b dir="auto">{r.name || (r.fleetIds.map(d.fleetName).join('+')) || '—'}</b>
               <span className="mono small faint">{maskMac(r.mac, privacy)}</span>
-              <span className="tag warn">{Math.round(spread)} {t('m')}</span>
+              <span className="tag warn"><span className="nowrap">{Math.round(spread)} {t('m')}</span></span>
               <span className="small muted">{fmtDur(r.last - r.first)}</span>
             </div>
           ))}
           {!d.coTravel.length && <span className="faint">—</span>}
-          {d.mine.length > 0 && <div className="small muted" style={{ marginTop: 8 }}>{t('mine')}: {d.mine.map((r) => e.named[r.key]?.name || r.name || r.mac).join(', ')}</div>}
+          {d.mine.length > 0 && <div className="small muted" style={{ marginTop: 8 }}>{t('mine')}: {d.mine.map((r, i) => <Fragment key={r.key}>{i > 0 && (t.dir === 'rtl' ? '، ' : ', ')}<bdi className={e.named[r.key]?.name || r.name ? '' : 'mono'}>{e.named[r.key]?.name || r.name || maskMac(r.mac, privacy)}</bdi></Fragment>)}</div>}
         </div>
       </div>
       {prompt && (
@@ -143,7 +144,7 @@ function Compare({ a, b, onClose }) {
       {list.sort((x, y) => (y.fleetIds.length - x.fleetIds.length)).slice(0, 100).map((r) => (
         <div key={r.key} className="row small" style={{ padding: '3px 0' }}>
           <span className={'tag ' + (r.kind === 'WIFI' ? 'wifi' : 'ble')}>{r.kind}</span>
-          <span className="ellipsis grow">{r.name || r.fleetIds.map((id) => e.fleetById(id)?.name).join('+') || <span className="mono faint">{maskMac(r.mac, privacy)}</span>}</span>
+          <span className="ellipsis grow" dir="auto">{r.name || r.fleetIds.map((id) => e.fleetById(id)?.name).join('+') || <span className="mono faint">{maskMac(r.mac, privacy)}</span>}</span>
           {r.fleetIds.some((id) => e.fleetById(id)?.attentionNote) && <span className={'tag ' + cls}>!</span>}
         </div>
       ))}
@@ -168,6 +169,7 @@ export function Reports() {
   const [cmp, setCmp] = useState(null)
   const [renaming, setRenaming] = useState(null)
   const active = e.activeSit()
+  const privacy = e.settings.privacy
   const toggleSel = (id) => setSel(sel.includes(id) ? sel.filter((x) => x !== id) : [...sel.slice(-1), id])
   return (
     <div className="stack">
@@ -224,11 +226,12 @@ export function Reports() {
       <div className="section-title">{t('log')}</div>
       <div className="card card-pad">
         <div className="row wrap">
-          <span className="grow muted">{t('logRows', { n: t.num(e.log.length) })}</span>
-          <button className="btn sm" disabled={!e.log.length} onClick={() => download('fieldwatch-log.csv', logCsv(e.log), 'text/csv')}><Icon name="download" size={14} />{t('exportLog')} CSV</button>
-          <button className="btn sm" disabled={!e.log.length} onClick={() => download('fieldwatch-log.jsonl', e.log.map((r) => JSON.stringify(r)).join('\n'), 'application/x-ndjson')}>JSONL</button>
-          <button className="btn sm danger" disabled={!e.log.length} onClick={() => e.clearLog()}>{t('clearLog')}</button>
+          <span className="grow muted" style={{ flex: '1 1 180px' }}>{t('logRows', { n: t.num(e.log.length) })}</span>
+          <button className="btn sm" disabled={!e.log.length || privacy} title={privacy ? t('privacyHint') : undefined} onClick={() => download('fieldwatch-log.csv', logCsv(e.log), 'text/csv')}><Icon name="download" size={14} />{t('exportLog')} CSV</button>
+          <button className="btn sm" disabled={!e.log.length || privacy} title={privacy ? t('privacyHint') : undefined} onClick={() => download('fieldwatch-log.jsonl', e.log.map((r) => JSON.stringify(r)).join('\n'), 'application/x-ndjson')}>JSONL</button>
+          <ConfirmButton className="btn sm danger" disabled={!e.log.length} confirmLabel={t('tapConfirm')} onConfirm={() => e.clearLog()}>{t('clearLog')}</ConfirmButton>
         </div>
+        {privacy && e.log.length > 0 && <div className="note small" style={{ marginTop: 10 }}>{t('privacyHint')}</div>}
       </div>
 
       {open && e.sits.find((s) => s.id === open) && <Debrief sit={e.sits.find((s) => s.id === open)} onClose={() => setOpen(null)} />}

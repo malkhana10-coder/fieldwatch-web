@@ -18,6 +18,9 @@ function useTheme(theme) {
     return () => mq.removeEventListener('change', h)
   }, [])
   const resolved = theme === 'system' ? (sys ? 'dark' : 'light') : theme
+  // Set during render (idempotent) so children that pick colours for canvases and
+  // Leaflet layers in this same render already see the new theme.
+  if (document.documentElement.dataset.theme !== resolved) document.documentElement.dataset.theme = resolved
   useEffect(() => {
     document.documentElement.dataset.theme = resolved
     const meta = document.querySelector('meta[name="theme-color"]')
@@ -46,7 +49,7 @@ export default function App() {
   useEffect(() => {
     document.documentElement.lang = s.lang
     document.documentElement.dir = t.dir
-    document.title = s.lang === 'ar' ? 'فيلدواتش — مراقب ميداني' : 'Fieldwatch Web'
+    document.title = t('docTitle')
   }, [s.lang])
   useEffect(() => { history.replaceState(null, '', '#' + tab) }, [tab])
 
@@ -73,7 +76,7 @@ export default function App() {
               <span className="hide-sm">{e.running ? t('scanning') : t('stopped')}</span>
             </span>
             {sit && <span className="status-dot" title={t('sitRunning')}><Icon name="file" size={13} />{Object.keys(sit.radios).length}</span>}
-            {e.pos && <span className="status-dot" title={e.pos.simulated ? 'GPS (simulated)' : 'GPS'}><Icon name="pin" size={13} style={{ color: 'var(--accent)' }} /></span>}
+            {e.pos && <span className="status-dot" role="img" title={e.pos.simulated ? t('gpsSimulated') : t('gps')} aria-label={e.pos.simulated ? t('gpsSimulated') : t('gps')}><Icon name="pin" size={13} style={{ color: 'var(--accent)' }} /></span>}
             <button className="btn sm icon ghost" onClick={() => e.set({ lang: s.lang === 'ar' ? 'en' : 'ar' })} title={t('language')} aria-label={t('language')} style={{ width: 'auto', padding: '0 8px', fontWeight: 700 }}>
               {s.lang === 'ar' ? 'EN' : 'ع'}
             </button>
@@ -94,25 +97,26 @@ export default function App() {
                   : <Settings />}
       </main>
 
-      <nav className="tabbar" aria-label="tabs">
+      <nav className="tabbar" aria-label={t('tabsNav')}>
         <div className="tabbar-inner">
           {TABS.map((x) => (
             <button key={x.id} className={'tab' + (tab === x.id ? ' active' : '')} onClick={() => setTab(x.id)} aria-current={tab === x.id ? 'page' : undefined}>
               <Icon name={x.icon} size={21} />
               <span>{t(x.key)}</span>
               {x.id === 'live' && attn > 0 && <span className="badge">{attn}</span>}
-              {x.id === 'reports' && sit && <span className="badge" style={{ background: 'var(--accent)', color: 'var(--accent-ink)' }}>●</span>}
+              {x.id === 'reports' && sit && <span className="badge badge-accent" aria-label={t('sitRunning')}>●</span>}
             </button>
           ))}
         </div>
       </nav>
 
       <div className="toasts" aria-live="polite">
-        {e.toasts.map((x) => (
-          <div key={x.id} className={'toast ' + x.kind} onClick={() => x.key && e.radios.has(x.key) && setDetail(x.key)}>
-            {x.kind === 'alert' && <Icon name="bell" size={16} />}<span>{x.text}</span>{x.extra > 0 && <span className="badge" style={{ background: '#fff', color: 'var(--danger)' }}>+{x.extra}</span>}
-          </div>
-        ))}
+        {e.toasts.map((x) => {
+          const body = <>{x.kind === 'alert' && <Icon name="bell" size={16} />}<span>{x.text}</span>{x.extra > 0 && <span className="badge badge-invert" dir="ltr">+{x.extra}</span>}</>
+          return x.key && e.radios.has(x.key)
+            ? <button key={x.id} type="button" className={'toast ' + x.kind} onClick={() => setDetail(x.key)}>{body}</button>
+            : <div key={x.id} className={'toast ' + x.kind}>{body}</div>
+        })}
       </div>
 
       {detail && <Detail radioKey={detail} onClose={() => setDetail(null)} onHunt={(k) => { e.huntKey = k; setDetail(null); setTab('hunt'); e.emit() }} />}

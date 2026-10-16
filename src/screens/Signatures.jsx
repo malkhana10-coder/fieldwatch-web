@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react'
 import { useEngine, Icon, Sheet, Switch, Setting, CLASS_ICON, ConfirmButton } from '../ui.jsx'
-import { describeRule, PALETTE } from '../engine/catalog.js'
+import { describeRule } from '../engine/catalog.js'
+import { fleetColor } from './Live.jsx'
+import { PALETTE } from '../engine/catalog.js'
 import { download, pickFile } from '../engine/storage.js'
 import { CLASSES } from '../i18n.js'
 
@@ -16,16 +18,16 @@ export function SignatureEditor({ fleet, isNew, onClose }) {
     <Sheet title={isNew ? t('newSignature') : f.name} onClose={onClose}
       actions={<button className="btn sm primary" onClick={() => { e.upsertFleet(f); e.toast(t('save') + ' ✓'); onClose() }}>{t('save')}</button>}>
       <div className="stack">
-        <label className="field"><span>{t('name')}</span><input className="input" value={f.name} onChange={(ev) => upd({ name: ev.target.value })} /></label>
+        <label className="field"><span>{t('name')}</span><input className="input" dir="auto" value={f.name} onChange={(ev) => upd({ name: ev.target.value })} /></label>
         <div className="row wrap">
           <label className="field grow"><span>{t('class')}</span>
             <select className="input" value={f.kind} onChange={(ev) => upd({ kind: ev.target.value })}>
               {CLASSES.map((c) => <option key={c} value={c}>{t.cls(c)}</option>)}
             </select>
           </label>
-          <label className="field"><span>{t.lang === 'ar' ? 'اللون' : 'Color'}</span>
-            <div className="row">{PALETTE.map((c, i) => <button key={i} aria-label={'color ' + i} onClick={() => upd({ colorIndex: i })} style={{ width: 24, height: 24, borderRadius: 6, background: c, border: f.colorIndex === i ? '2px solid var(--text)' : '1px solid var(--line)' }} />)}</div>
-          </label>
+          <div className="field" role="radiogroup" aria-label={t('colorLabel')}><span aria-hidden="true">{t('colorLabel')}</span>
+            <div className="row wrap">{PALETTE.map((c, i) => <button key={i} type="button" role="radio" aria-checked={f.colorIndex === i} aria-label={t('colorN', { n: i + 1 })} title={t('colorN', { n: i + 1 })} onClick={() => upd({ colorIndex: i })} style={{ width: 24, height: 24, borderRadius: 6, background: fleetColor(i), border: f.colorIndex === i ? '2px solid var(--text)' : '1px solid var(--line)' }} />)}</div>
+          </div>
         </div>
         <div className="card">
           <Setting title={f.matchAny !== false ? t('matchAny') : t('matchAll')}><Switch checked={f.matchAny !== false} onChange={(v) => upd({ matchAny: v })} /></Setting>
@@ -38,15 +40,15 @@ export function SignatureEditor({ fleet, isNew, onClose }) {
           <div className="card" style={{ maxHeight: 360, overflow: 'auto' }}>
             {f.rules.slice(0, 200).map((r, i) => (
               <div key={i} className="setting" style={{ flexWrap: 'wrap' }}>
-                <select className="input" style={{ width: 'auto' }} value={r.kind} onChange={(ev) => updRule(i, { kind: ev.target.value })}>{RULE_KINDS.map((k) => <option key={k}>{k}</option>)}</select>
+                <select className="input" style={{ width: 'auto' }} aria-label={t('ruleKind')} value={r.kind} onChange={(ev) => updRule(i, { kind: ev.target.value })}>{RULE_KINDS.map((k) => <option key={k}>{k}</option>)}</select>
                 {['MANUFACTURER_ID', 'MANUFACTURER_DATA'].includes(r.kind)
-                  ? <input className="input mono" style={{ width: 110 }} placeholder="0x004C" value={'0x' + (r.companyId || 0).toString(16).toUpperCase()} onChange={(ev) => updRule(i, { companyId: parseInt(ev.target.value.replace(/^0x/i, ''), 16) || 0 })} />
-                  : <input className="input mono grow" style={{ minWidth: 120 }} value={r.text} placeholder={r.kind === 'OUI' ? 'AA:BB:CC' : r.kind.startsWith('NAME') ? 'Name*' : 'FEAA'} onChange={(ev) => updRule(i, { text: ev.target.value })} />}
-                {['MANUFACTURER_DATA', 'SERVICE_DATA'].includes(r.kind) && <input className="input mono" style={{ width: 110 }} placeholder="hex prefix" value={r.dataPrefixHex} onChange={(ev) => updRule(i, { dataPrefixHex: ev.target.value })} />}
-                <select className="input" style={{ width: 'auto' }} value={r.radio || ''} onChange={(ev) => updRule(i, { radio: ev.target.value || null })}>
+                  ? <input className="input mono" style={{ width: 110 }} aria-label={t('ruleCompany')} placeholder="0x004C" value={'0x' + (r.companyId || 0).toString(16).toUpperCase()} onChange={(ev) => updRule(i, { companyId: parseInt(ev.target.value.replace(/^0x/i, ''), 16) || 0 })} />
+                  : <input className="input mono grow" style={{ minWidth: 120 }} aria-label={t('ruleValue')} value={r.text} placeholder={r.kind === 'OUI' ? 'AA:BB:CC' : r.kind.startsWith('NAME') ? 'Name*' : 'FEAA'} onChange={(ev) => updRule(i, { text: ev.target.value })} />}
+                {['MANUFACTURER_DATA', 'SERVICE_DATA'].includes(r.kind) && <input className="input mono" style={{ width: 110 }} aria-label={t('ruleData')} placeholder={t('ruleData')} value={r.dataPrefixHex} onChange={(ev) => updRule(i, { dataPrefixHex: ev.target.value })} />}
+                <select className="input" style={{ width: 'auto' }} aria-label={t('fRadio')} value={r.radio || ''} onChange={(ev) => updRule(i, { radio: ev.target.value || null })}>
                   <option value="">{t('fBoth')}</option><option value="WIFI">Wi-Fi</option><option value="BLE">BLE</option>
                 </select>
-                <Switch checked={r.enabled !== false} onChange={(v) => updRule(i, { enabled: v })} />
+                <Switch checked={r.enabled !== false} onChange={(v) => updRule(i, { enabled: v })} label={t('ruleEnabled')} />
                 <button className="btn sm icon ghost" aria-label={t('delete')} onClick={() => upd({ rules: f.rules.filter((_, j) => j !== i) })}><Icon name="trash" size={15} /></button>
               </div>
             ))}
@@ -92,7 +94,7 @@ export function Signatures() {
     <div className="stack">
       <div className="hero">
         <div className="row wrap">
-          <div className="grow">
+          <div className="grow" style={{ flex: '1 1 220px' }}>
             <div style={{ fontSize: 20, fontWeight: 700 }}>{t('catalog')} <span className="tag ok">#{e.catalogVersion}</span></div>
             <div className="muted">{t('sigCount', { n: e.fleets.length, r: t.num(ruleCount) })}</div>
           </div>
@@ -107,15 +109,15 @@ export function Signatures() {
       </div>
 
       <div className="controls">
-        <div className="search grow" style={{ minWidth: 200 }}><Icon name="search" size={16} /><input className="input" value={q} placeholder={t('search')} onChange={(ev) => setQ(ev.target.value)} /></div>
-        <select className="input" style={{ width: 'auto' }} value={cls} onChange={(ev) => setCls(ev.target.value)}>
+        <div className="search grow" style={{ minWidth: 200 }}><Icon name="search" size={16} /><input className="input" type="search" value={q} placeholder={t('searchSigs')} aria-label={t('searchSigs')} onChange={(ev) => setQ(ev.target.value)} /></div>
+        <select className="input" style={{ width: 'auto', maxWidth: '100%' }} aria-label={t('fClasses')} value={cls} onChange={(ev) => setCls(ev.target.value)}>
           <option value="">{t('fClasses')}: {t('all')}</option>
           {CLASSES.map((c) => <option key={c} value={c}>{t.cls(c)}</option>)}
         </select>
       </div>
       <div className="row wrap">
         {[['', t('all')], ['live', t('liveHits')], ['watch', t('bookmarked')], ['attn', t('attention')], ['custom', t('custom')]].map(([k, l]) => (
-          <button key={k} className={'chip' + (only === k ? ' on' : '')} onClick={() => setOnly(k)}>{l}</button>
+          <button key={k} className={'chip' + (only === k ? ' on' : '')} aria-pressed={only === k} onClick={() => setOnly(k)}>{l}</button>
         ))}
         <span className="spacer" />
         <button className="btn sm ghost" onClick={() => e.setAllFleets(true, list.map((f) => f.id))}>{t('enableAll')}</button>
@@ -126,15 +128,15 @@ export function Signatures() {
         {list.map((f) => (
           <div key={f.id}>
             <div className="sig">
-              <span className="sig-swatch" style={{ background: PALETTE[f.colorIndex % PALETTE.length] }} />
-              <button className="grow" style={{ background: 'none', border: 0, textAlign: 'start', padding: 0, minWidth: 0 }} onClick={() => setOpenId(openId === f.id ? null : f.id)}>
+              <span className="sig-swatch" style={{ background: fleetColor(f.colorIndex) }} />
+              <button className="grow" style={{ background: 'none', border: 0, textAlign: 'start', padding: 0, minWidth: 0 }} aria-expanded={openId === f.id} onClick={() => setOpenId(openId === f.id ? null : f.id)}>
                 <div className="row" style={{ gap: 6 }}>
                   <Icon name={CLASS_ICON[f.kind] || 'dot'} size={15} />
-                  <b className="ellipsis">{f.name}</b>
+                  <b className="ellipsis" dir="auto">{f.name}</b>
                   {f.attentionNote && <span className="tag attn">!</span>}
                   {liveCounts[f.id] > 0 && <span className="tag ok">{liveCounts[f.id]}</span>}
                 </div>
-                <div className="tiny faint">{t.cls(f.kind)} · {f.rules.length} {t('rules').toLowerCase()} · {f.builtIn ? t('builtIn') : t('custom')}{f.decode ? ' · decode' : ''}</div>
+                <div className="tiny faint">{t.cls(f.kind)} · {t('ruleCount', { n: f.rules.length })} · {f.builtIn ? t('builtIn') : t('custom')}{f.decode ? ` · ${t('decodeTag')}` : ''}</div>
               </button>
               <button className={'btn sm icon ' + (e.watch.has(f.id) ? '' : 'ghost')} style={e.watch.has(f.id) ? { color: 'var(--info)' } : undefined} title={t('bookmarked')} aria-label={t('bookmarked')} onClick={() => e.toggleWatch(f.id)}><Icon name="bell" size={15} /></button>
               <Switch checked={f.enabled} onChange={(v) => e.toggleFleet(f.id, v)} label={f.name} />
