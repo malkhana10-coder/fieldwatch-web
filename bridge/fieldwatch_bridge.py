@@ -13,6 +13,14 @@ Protocol (server -> client, JSON text frames):
      "caps":{"wifi":bool,"ble":bool},"platform":"linux|windows|darwin|termux"}
     {"type":"sightings","items":[<sighting>, ...]}
 
+    BLE sightings carry "addrType": "public" | "random" | null (BlueZ reports
+    it; macOS pseudo MACs are "random"; elsewhere null). Wi-Fi items omit it.
+    Remote ID (service data FFFA) is never merged away inside a window: each
+    distinct payload is its own svcData entry (up to 16 per address).
+    A BLE window is sent as frames of <= 1500 items (<= 3000 per window),
+    known addresses and ones carrying data first, so a flood of random
+    addresses cannot push real devices out.
+
 Security: every client must present ?token=<token> in the connect URL, else the
 connection is closed with code 1008 (policy violation). Without it, any web page
 the user happens to visit could open ws://127.0.0.1:8765 and read nearby-device
@@ -43,14 +51,17 @@ import secrets
 import shutil
 import subprocess
 import sys
+import time
 from typing import Any, Callable, Dict, Iterable, List, Optional
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 PROTOCOL_VERSION = 1
 AGENT = "fieldwatch-bridge"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 BLE_FREQ = 2402
+SEND_TIMEOUT = 5.0      # seconds a client may take to accept one frame
+SHUTDOWN_TIMEOUT = 5.0  # seconds allowed for a clean shutdown before forcing it
 
 log = logging.getLogger("fieldwatch-bridge")
 
@@ -96,6 +107,8 @@ def freq_to_channel(freq: Any) -> int:
         return (f - 2407) // 5
     if 5150 <= f <= 5925:
         return (f - 5000) // 5
+    if f == 5935:  # 6 GHz channel 2 sits below channel 1 (5955 MHz)
+        return 2
     if 5955 <= f <= 7125:
         return (f - 5950) // 5
     return 0
@@ -114,6 +127,8 @@ def channel_to_freq(channel: Any, band: Optional[str] = None) -> int:
     if c <= 0:
         return 0
     if band and str(band).startswith("6"):
+        if c == 2:  # 6 GHz channel 2 is the odd one out: 5935 MHz, not 5960
+            return 5935
         return 5950 + 5 * c
     if 1 <= c <= 13:
         return 2407 + 5 * c
@@ -488,7 +503,40 @@ def ble_address_to_mac(address: str) -> Optional[str]:
     return None
 
 
-def ble_to_item(address: str, adv: Any, fallback_rssi: Optional[int] = None) -> Optional[Dict[str, Any]]:
+ADDR_TYPES = ("public", "random")
+
+
+def ble_addr_type(device: Any) -> Optional[str]:
+    """Best-effort BLE address type for a bleak device: 'public', 'random' or None.
+
+    - macOS (CoreBluetooth): the address is a per-host UUID that the bridge
+      turns into a pseudo MAC, so it is reported as 'random'.
+    - Linux (BlueZ): bleak exposes the D-Bus device properties, whose
+      'AddressType' is 'public' or 'random'. Depending on the bleak version,
+      `device.details` is {"path": ..., "props": {...}} or the props dict
+      itself; both shapes (and anything else) are handled defensively.
+    - Anything else (Windows, unknown shapes): None.
+    """
+    address = str(getattr(device, "address", "") or "").strip().lower()
+    if _UUID_RE.match(address):
+        return "random"
+    details = getattr(device, "details", None)
+    if not isinstance(details, dict):
+        return None
+    props = details.get("props")
+    for cand in ((props if isinstance(props, dict) else None), details):
+        if not isinstance(cand, dict):
+            continue
+        v = cand.get("AddressType")
+        if v is None:
+            continue
+        v = str(getattr(v, "value", v)).strip().lower()  # dbus Variant or str
+        return v if v in ADDR_TYPES else None
+    return None
+
+
+def ble_to_item(address: str, adv: Any, fallback_rssi: Optional[int] = None,
+                addr_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """bleak (device.address, AdvertisementData) -> sighting dict, or None."""
     mac = ble_address_to_mac(address)
     if not mac:
@@ -520,15 +568,64 @@ def ble_to_item(address: str, adv: Any, fallback_rssi: Optional[int] = None) -> 
         "svcData": svc,
         "vendorIe": [],
         "hidden": False,
+        "addrType": addr_type if addr_type in ADDR_TYPES else None,
     }
+
+
+# ASTM F3411 / ASD-STAN Remote ID service data UUID. Drones (BT4 legacy
+# adverts) rotate one message per advert -- Basic ID, Location, Self-ID,
+# System, Operator ID -- so every distinct payload must reach the app.
+ODID_UUID = "FFFA"
+MAX_SVC_DATA = 16  # per address per window; matches the app's svcData cap
+
+
+def _odid_kind(data_hex: str) -> str:
+    """Message-type nibble of an FFFA payload (0D <counter> <header> ...)."""
+    return data_hex[4:5] if len(data_hex) >= 6 else ""
+
+
+def _merge_svc(prev: List[Dict[str, Any]], new: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Window-merge service data.
+
+    Non-Remote-ID entries: the latest advert's, else the earlier one's.
+    Remote ID (FFFA) entries: every distinct payload of the window, in arrival
+    order, identical hex de-duplicated. Total length is capped at MAX_SVC_DATA;
+    on overflow the oldest FFFA entry whose message type is also carried by a
+    newer entry is evicted first, so each message type keeps its latest copy.
+    """
+    other_new = [s for s in new if s.get("uuid") != ODID_UUID]
+    other = other_new or [s for s in prev if s.get("uuid") != ODID_UUID]
+    other = other[:MAX_SVC_DATA]
+    cap = max(0, MAX_SVC_DATA - len(other))
+    odid: List[Dict[str, Any]] = []
+    seen = set()
+    for s in list(prev) + list(new):
+        if s.get("uuid") != ODID_UUID:
+            continue
+        h = s.get("dataHex", "")
+        if h in seen:
+            continue
+        seen.add(h)
+        odid.append(s)
+        while len(odid) > cap:
+            kinds = [_odid_kind(x.get("dataHex", "")) for x in odid]
+            victim = 0
+            for i, k in enumerate(kinds):
+                if k and k in kinds[i + 1:]:
+                    victim = i
+                    break
+            odid.pop(victim)
+    return other + odid
 
 
 def merge_ble(prev: Optional[Dict[str, Any]], new: Dict[str, Any]) -> Dict[str, Any]:
     """De-duplicate two sightings of one address inside a flush window.
 
     Keeps the latest reading, but the strongest RSSI of the window, and fills
-    name / mfg / uuids / svcData from earlier packets when the latest one
-    lacks them (devices alternate adverts and scan responses).
+    name / mfg / uuids / addrType from earlier packets when the latest one
+    lacks them (devices alternate adverts and scan responses). Remote ID
+    (FFFA) service data is never merged away: every distinct payload is kept
+    as its own svcData entry (see _merge_svc).
     """
     if not prev:
         return new
@@ -537,10 +634,61 @@ def merge_ble(prev: Optional[Dict[str, Any]], new: Dict[str, Any]) -> Dict[str, 
     for k in ("name",):
         if not out.get(k):
             out[k] = prev.get(k, "")
-    for k in ("mfg", "uuids", "svcData"):
+    for k in ("mfg", "uuids"):
         if not out.get(k):
             out[k] = prev.get(k, [])
+    out["svcData"] = _merge_svc(prev.get("svcData") or [], new.get("svcData") or [])
+    if out.get("addrType") is None and prev.get("addrType") is not None:
+        out["addrType"] = prev["addrType"]
     return out
+
+
+# BLE flood protection. The app keeps only the first 2000 items of a frame and
+# drops frames over 2 MB, so an attacker cycling thousands of random addresses
+# could push real devices out. Each window is therefore sent as frames of at
+# most FRAME_ITEMS items / FRAME_BYTES bytes, at most WINDOW_ITEMS items in all,
+# best candidates first.
+FRAME_ITEMS = 1500
+FRAME_BYTES = 1_500_000
+WINDOW_ITEMS = 3000
+MAX_PENDING = 8000         # distinct new addresses buffered per window
+SEEN_TTL = 120.0           # seconds an address counts as "seen before"
+MAX_SEEN = 20000
+
+
+def _dumps(obj: Any) -> str:
+    return json.dumps(obj, separators=(",", ":"))
+
+
+def ble_priority(item: Dict[str, Any], seen: Any) -> "tuple":
+    """Sort key: known addresses, then ones carrying data/name, then stronger RSSI."""
+    has_data = bool(item.get("svcData") or item.get("mfg") or item.get("name"))
+    return (item.get("mac") not in seen, not has_data, -int(item.get("rssi", -127)))
+
+
+def plan_ble_frames(items: List[Dict[str, Any]], seen: Any,
+                    frame_items: int = FRAME_ITEMS, window_items: int = WINDOW_ITEMS,
+                    frame_bytes: int = FRAME_BYTES) -> "tuple[List[List[Dict[str, Any]]], int]":
+    """Order one window's BLE items by priority and split into frames.
+
+    Returns (frames, dropped). Frames hold at most `frame_items` items and
+    roughly `frame_bytes` of JSON; at most `window_items` items are kept.
+    """
+    ranked = sorted(items, key=lambda it: ble_priority(it, seen))
+    keep, dropped = ranked[:window_items], max(0, len(ranked) - window_items)
+    frames: List[List[Dict[str, Any]]] = []
+    cur: List[Dict[str, Any]] = []
+    size = 0
+    for it in keep:
+        n = len(_dumps(it)) + 1
+        if cur and (len(cur) >= frame_items or size + n > frame_bytes):
+            frames.append(cur)
+            cur, size = [], 0
+        cur.append(it)
+        size += n
+    if cur:
+        frames.append(cur)
+    return frames, dropped
 
 
 # --------------------------------------------------------------------------
@@ -632,7 +780,7 @@ def connect_url(host: str, port: int, token: str) -> str:
         h = "127.0.0.1"
     elif ":" in h and not h.startswith("["):
         h = "[%s]" % h
-    return "ws://%s:%d/?token=%s" % (h, port, token)
+    return "ws://%s:%d/?token=%s" % (h, port, quote(token, safe=""))
 
 
 # --------------------------------------------------------------------------
@@ -648,6 +796,9 @@ class Bridge:
         self.clients: set = set()
         self.caps = {"wifi": False, "ble": False}
         self.ble_pending: Dict[str, Dict[str, Any]] = {}
+        self.ble_seen: Dict[str, float] = {}  # mac -> monotonic time last forwarded
+        self._ble_overflow = 0                # adverts dropped because ble_pending was full
+        self._flood_warned_at: Optional[float] = None
         self.scanner = None
         self.wifi: Optional[WifiScanner] = None
 
@@ -680,16 +831,37 @@ class Bridge:
             self.clients.discard(connection)
             log.info("client disconnected: %s (%d left)", peer, len(self.clients))
 
+    def drop_client(self, c, why: str = ""):
+        """Forget a client and kill its connection without waiting on it."""
+        if c in self.clients:
+            self.clients.discard(c)
+            log.warning("dropping client %s: %s", getattr(c, "remote_address", None), why)
+        transport = getattr(c, "transport", None)
+        try:
+            if transport is not None and hasattr(transport, "abort"):
+                transport.abort()
+            else:  # pragma: no cover - very old websockets without .transport
+                asyncio.ensure_future(c.close())
+        except Exception as e:
+            log.debug("abort failed: %r", e)
+
     async def broadcast(self, items: List[Dict[str, Any]]):
         if not items or not self.clients:
             return
         msg = json.dumps({"type": "sightings", "items": items}, separators=(",", ":"))
 
         async def one(c):
+            # A client that stops reading must not stall everyone else: each
+            # send is bounded, and a slow or broken client is cut off.
             try:
-                await c.send(msg)
+                await asyncio.wait_for(c.send(msg), timeout=SEND_TIMEOUT)
+            except asyncio.TimeoutError:
+                self.drop_client(c, "not reading (send timed out after %ss)" % SEND_TIMEOUT)
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 log.debug("send failed: %r", e)
+                self.drop_client(c, "send failed: %s" % (e.__class__.__name__,))
 
         await asyncio.gather(*(one(c) for c in list(self.clients)))
 
@@ -740,12 +912,18 @@ class Bridge:
     def on_ble(self, device, adv):
         try:
             item = ble_to_item(getattr(device, "address", ""), adv,
-                               fallback_rssi=getattr(device, "rssi", None))
+                               fallback_rssi=getattr(device, "rssi", None),
+                               addr_type=ble_addr_type(device))
         except Exception as e:
             log.debug("bad BLE advert: %r", e)
             return
         if item:
-            self.ble_pending[item["mac"]] = merge_ble(self.ble_pending.get(item["mac"]), item)
+            mac = item["mac"]
+            prev = self.ble_pending.get(mac)
+            if prev is None and len(self.ble_pending) >= MAX_PENDING and mac not in self.ble_seen:
+                self._ble_overflow += 1  # flood: keep memory bounded, favour known devices
+                return
+            self.ble_pending[mac] = merge_ble(prev, item)
 
     async def setup_ble(self):
         if self.args.no_ble:
@@ -767,13 +945,41 @@ class Bridge:
         self.caps["ble"] = True
         log.info("BLE scanner started; flushing every %ss", self.args.ble_window)
 
+    def take_ble_frames(self, now: Optional[float] = None) -> List[List[Dict[str, Any]]]:
+        """Swap out the pending window and plan its frames (see plan_ble_frames)."""
+        now = time.monotonic() if now is None else now
+        batch, self.ble_pending = self.ble_pending, {}
+        overflow, self._ble_overflow = self._ble_overflow, 0
+        # Forget addresses not forwarded for a while; keep the table bounded.
+        cutoff = now - SEEN_TTL
+        self.ble_seen = {m: t for m, t in self.ble_seen.items() if t >= cutoff}
+        if not batch:
+            return []
+        frames, dropped = plan_ble_frames(list(batch.values()), self.ble_seen)
+        sent = sum(len(f) for f in frames)
+        if len(batch) > FRAME_ITEMS or overflow:
+            if self._flood_warned_at is None or now - self._flood_warned_at >= 60:
+                self._flood_warned_at = now
+                log.warning("BLE flood? %d addresses in one %ss window: sent %d in %d frame(s), "
+                            "dropped %d (+%d unbuffered); known devices are sent first.",
+                            len(batch) + overflow, self.args.ble_window, sent, len(frames),
+                            dropped, overflow)
+        for f in frames:
+            for it in f:
+                self.ble_seen[it["mac"]] = now
+        if len(self.ble_seen) > MAX_SEEN:
+            newest = sorted(self.ble_seen.items(), key=lambda kv: kv[1])[-MAX_SEEN:]
+            self.ble_seen = dict(newest)
+        return frames
+
     async def ble_loop(self):
         while True:
             await asyncio.sleep(self.args.ble_window)
-            batch, self.ble_pending = self.ble_pending, {}
-            if batch:
-                log.debug("ble: %d devices", len(batch))
-                await self.broadcast(list(batch.values()))
+            frames = self.take_ble_frames()
+            if frames:
+                log.debug("ble: %d devices in %d frame(s)", sum(map(len, frames)), len(frames))
+            for f in frames:
+                await self.broadcast(f)
 
     async def stop_ble(self):
         if self.scanner is not None:
@@ -803,41 +1009,76 @@ class Bridge:
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()
         import signal
+
+        def on_signal():
+            if stop.is_set():  # second Ctrl+C: stop waiting for a clean shutdown
+                print("forced exit.", file=sys.stderr, flush=True)
+                os._exit(130)
+            stop.set()
+
         for sig in (getattr(signal, "SIGINT", None), getattr(signal, "SIGTERM", None)):
             if sig is None:
                 continue
             try:
-                loop.add_signal_handler(sig, stop.set)
+                loop.add_signal_handler(sig, on_signal)
             except (NotImplementedError, RuntimeError):
                 pass  # Windows: Ctrl+C arrives as KeyboardInterrupt instead.
 
-        tasks = []
+        tasks: List[asyncio.Future] = []
+        server = await serve(self.handler, self.args.host, self.args.port,
+                             max_size=4096, close_timeout=2)
         try:
-            async with serve(self.handler, self.args.host, self.args.port,
-                             max_size=4096):
-                url = connect_url(self.args.host, self.args.port, self.token)
-                print("Fieldwatch bridge (protocol v%s, %s) listening." % (PROTOCOL_VERSION, self.platform),
-                      file=sys.stderr)
-                print("Connect URL: %s" % url, flush=True)
-                if not is_loopback(self.args.host):
-                    log.warning("Host %s is not loopback: other machines on the network can "
-                                "reach this bridge. Keep the token secret.", self.args.host)
-                if self.wifi:
-                    tasks.append(asyncio.ensure_future(self.wifi_loop()))
-                if self.caps["ble"]:
-                    tasks.append(asyncio.ensure_future(self.ble_loop()))
-                await stop.wait()
-                log.info("shutting down...")
+            url = connect_url(self.args.host, self.args.port, self.token)
+            print("Fieldwatch bridge (protocol v%s, %s) listening." % (PROTOCOL_VERSION, self.platform),
+                  file=sys.stderr)
+            print("Connect URL: %s" % url, flush=True)
+            if not is_loopback(self.args.host):
+                log.warning("Host %s is not loopback: other machines on the network can "
+                            "reach this bridge. Keep the token secret.", self.args.host)
+            if self.wifi:
+                tasks.append(asyncio.ensure_future(self.wifi_loop()))
+            if self.caps["ble"]:
+                tasks.append(asyncio.ensure_future(self.ble_loop()))
+            await stop.wait()
+            log.info("shutting down...")
         finally:
-            for t in tasks:
-                t.cancel()
-            for t in tasks:
-                try:
-                    await t
-                except (asyncio.CancelledError, Exception):
-                    pass
-            await self.stop_ble()
+            try:
+                await asyncio.wait_for(self.shutdown(server, tasks), SHUTDOWN_TIMEOUT)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception) as e:
+                log.warning("shutdown did not finish cleanly (%r); exiting anyway.", e)
+                for c in list(self.clients):
+                    self.clients.discard(c)
+                    transport = getattr(c, "transport", None)
+                    if transport is not None and hasattr(transport, "abort"):
+                        transport.abort()
         return 0
+
+    async def shutdown(self, server, tasks: List[asyncio.Future]):
+        """Stop loops, cut clients off, close the listener, stop BLE -- all bounded."""
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+        async def bye(c):
+            try:
+                await asyncio.wait_for(c.close(1001, "bridge shutting down"), 1.0)
+            except Exception:
+                pass
+            self.clients.discard(c)
+            transport = getattr(c, "transport", None)
+            if transport is not None and hasattr(transport, "abort"):
+                transport.abort()
+
+        await asyncio.gather(*(bye(c) for c in list(self.clients)), return_exceptions=True)
+        server.close()
+        try:
+            await asyncio.wait_for(server.wait_closed(), 2.0)
+        except asyncio.TimeoutError:
+            log.debug("listener close timed out")
+        try:
+            await asyncio.wait_for(self.stop_ble(), 2.0)
+        except asyncio.TimeoutError:
+            log.debug("BLE stop timed out")
 
 
 def build_parser() -> argparse.ArgumentParser:

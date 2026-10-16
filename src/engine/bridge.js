@@ -7,7 +7,12 @@ const MAC_RE = /^[0-9A-F]{2}(:[0-9A-F]{2}){5}$/
 const HEX_RE = /^[0-9A-F]*$/
 const str = (v, max = 64) => (typeof v === 'string' ? v.slice(0, max) : '')
 const int = (v, lo, hi, dflt) => (Number.isFinite(Number(v)) ? Math.max(lo, Math.min(hi, Math.round(Number(v)))) : dflt)
-const hex = (v, max = 128) => {
+// 255 bytes: the largest BLE AD payload. BT5 Remote ID message packs are
+// 3 + 25*n bytes after the 0D/counter prefix (5 messages = 130 B, 9 = 230 B).
+export const MAX_DATA_BYTES = 255
+export const MAX_SVC_DATA = 16 // the bridge keeps every distinct FFFA payload of a window, up to 16
+const ADDR_TYPES = new Set(['public', 'random'])
+const hex = (v, max = MAX_DATA_BYTES) => {
   const h = str(v, max * 2).toUpperCase()
   return HEX_RE.test(h) && h.length % 2 === 0 ? h : ''
 }
@@ -24,8 +29,10 @@ export function sanitizeSighting(x) {
     channel: int(x.channel, 0, 255, 0), freq: int(x.freq, 0, 8000, kind === 'BLE' ? 2402 : 0), security: str(x.security, 32),
     mfg: arr(x.mfg, 8).map((m) => ({ companyId: int(m?.companyId, 0, 0xffff, -1), dataHex: hex(m?.dataHex) })).filter((m) => m.companyId >= 0),
     uuids: arr(x.uuids, 16).map((u) => str(u, 36)).filter(Boolean),
-    svcData: arr(x.svcData, 8).map((s) => ({ uuid: str(s?.uuid, 36), dataHex: hex(s?.dataHex) })).filter((s) => s.uuid),
+    svcData: arr(x.svcData, MAX_SVC_DATA).map((s) => ({ uuid: str(s?.uuid, 36), dataHex: hex(s?.dataHex) })).filter((s) => s.uuid),
     vendorIe: arr(x.vendorIe, 8).map((v) => str(v, 16)).filter(Boolean),
+    // BLE address type from the bridge: exactly 'public' or 'random', else unknown (null).
+    addrType: typeof x.addrType === 'string' && ADDR_TYPES.has(x.addrType) ? x.addrType : null,
   }
 }
 

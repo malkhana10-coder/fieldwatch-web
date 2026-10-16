@@ -33,16 +33,21 @@ python3 fieldwatch_bridge.py
 | `--token` | random | Access token. A new one is generated on every start unless you set one. |
 | `--no-wifi` / `--no-ble` | off | Turn off a radio |
 | `--wifi-interval` | `5` | Seconds between Wi-Fi scans |
-| `--ble-window` | `2` | Seconds between BLE batches. Repeated adverts from the same device in a window are merged, keeping the strongest RSSI. |
+| `--ble-window` | `2` | Seconds between BLE batches. Repeated adverts from the same device in a window are merged, keeping the strongest RSSI. Remote ID (drone) service data is never merged away: every distinct payload is kept (see below). |
 | `--verbose` | off | Debug logging (stderr) |
 
 Stop it with Ctrl+C.
 
 ### Connect from the app
 
-Copy the whole **Connect URL** that the bridge prints, including `?token=`, into the app's bridge setting. Use `--token` to keep the same URL across restarts. A connection without the right token is closed with code 1008.
+Copy the whole **Connect URL** that the bridge prints, including `?token=`, into the app's bridge setting. Use `--token` to keep the same URL across restarts (characters such as `+`, `&` or `#` in it are URL-encoded in the printed URL). A connection without the right token is closed with code 1008.
 
-Protocol: the bridge first sends `{"type":"hello",...,"caps":{"wifi":…,"ble":…}}`, then batches shaped `{"type":"sightings","items":[…]}`.
+Protocol (version 1): the bridge first sends `{"type":"hello",...,"caps":{"wifi":…,"ble":…}}`, then batches shaped `{"type":"sightings","items":[…]}`.
+
+- **`addrType`** (BLE items only): `"public"`, `"random"` or `null` (unknown). On Linux it comes from BlueZ (`AddressType`). On macOS it is always `"random"`, because the address is a pseudo MAC (see below). On Windows it is `null`. Wi-Fi items do not carry it. The field is optional, so older apps simply ignore it.
+- **Remote ID (service data `FFFA`)**: drones using Bluetooth 4 send one Remote ID message per advert and rotate through Basic ID, Location, Self-ID, System and Operator ID. Within one `--ble-window` the bridge keeps every distinct `FFFA` payload of a device as its own `svcData` entry (identical payloads are sent once, at most 16 entries per device per window), so no message type is lost. Bluetooth 5 message packs up to 255 bytes are passed through whole.
+- **Flood protection**: each BLE window is sent as frames of at most 1500 items, at most 3000 items per window. Devices already seen in earlier windows go first, then devices that carry data or a name, then the strongest signals. If a window is larger (for example someone cycling thousands of fake addresses), the rest is dropped and a one-line warning is logged at most once a minute.
+- **Slow clients**: a client that stops reading is disconnected after 5 seconds, so it cannot hold up data for other clients. Ctrl+C shuts down within a few seconds; press it twice to exit immediately.
 
 ### Platform notes
 
@@ -63,6 +68,7 @@ Protocol: the bridge first sends `{"type":"hello",...,"caps":{"wifi":…,"ble":�
 
 ```sh
 python3 -m unittest bridge/test_bridge.py      # from the repo root; no dependencies needed
+npx vitest run test/bridge.test.js             # the app side (src/engine/bridge.js)
 ```
 
 ---
@@ -106,14 +112,21 @@ python3 fieldwatch_bridge.py
 - الخيار `--token` يحدد رمز الدخول. إذا لم تحدده، يُنشأ رمز عشوائي جديد في كل تشغيل.
 - الخياران `--no-wifi` و`--no-ble` يوقفان فحص Wi-Fi أو البلوتوث.
 - الخيار `--wifi-interval` يحدد عدد الثواني بين كل فحص لشبكات Wi-Fi، والافتراضي 5.
-- الخيار `--ble-window` يحدد عدد الثواني بين كل دفعة من نتائج البلوتوث، والافتراضي 2. تُدمج الإعلانات المتكررة من الجهاز نفسه خلال الفترة الواحدة، مع الاحتفاظ بأقوى إشارة.
+- الخيار `--ble-window` يحدد عدد الثواني بين كل دفعة من نتائج البلوتوث، والافتراضي 2. تُدمج الإعلانات المتكررة من الجهاز نفسه خلال الفترة الواحدة، مع الاحتفاظ بأقوى إشارة، باستثناء بيانات التعريف عن بُعد للطائرات المسيّرة التي تُحفظ كل حمولة مختلفة منها (انظر أدناه).
 - الخيار `--verbose` يعرض سجلات تفصيلية.
 
 للإيقاف اضغط Ctrl+C.
 
 ### الربط بالتطبيق
 
-انسخ **رابط الاتصال (Connect URL)** الذي يطبعه الجسر كاملًا، بما في ذلك الجزء `?token=`، والصقه في إعداد الجسر داخل التطبيق. لتثبيت الرابط نفسه بين مرات التشغيل، استخدم `--token`. أي اتصال لا يحمل الرمز الصحيح يُغلق بالرمز 1008.
+انسخ **رابط الاتصال (Connect URL)** الذي يطبعه الجسر كاملًا، بما في ذلك الجزء `?token=`، والصقه في إعداد الجسر داخل التطبيق. لتثبيت الرابط نفسه بين مرات التشغيل، استخدم `--token` (تُرمَّز الرموز الخاصة مثل `+` و`&` و`#` تلقائيًا في الرابط المطبوع). أي اتصال لا يحمل الرمز الصحيح يُغلق بالرمز 1008.
+
+البروتوكول (الإصدار 1): يرسل الجسر أولًا رسالة `hello` فيها قدرات الفحص المتاحة، ثم دفعات من الأجهزة المرصودة بالشكل `{"type":"sightings","items":[…]}`.
+
+- **الحقل `addrType`** (لأجهزة البلوتوث فقط): قيمته `"public"` (عنوان عام ثابت) أو `"random"` (عنوان عشوائي) أو `null` (غير معروف). على لينكس يُقرأ من BlueZ (الخاصية `AddressType`). على ماك قيمته دائمًا `"random"` لأن العنوان بديل وليس حقيقيًا (انظر أدناه). على ويندوز قيمته `null`. لا يظهر هذا الحقل في شبكات Wi-Fi. الحقل اختياري، فالإصدارات الأقدم من التطبيق تتجاهله.
+- **التعريف عن بُعد للطائرات المسيّرة (بيانات الخدمة `FFFA`)**: الطائرات التي تستخدم بلوتوث 4 ترسل رسالة واحدة في كل إعلان، وتتناوب بين رسائل الهوية والموقع والوصف والنظام ومعرّف المشغّل. خلال الفترة الواحدة (`--ble-window`) يحتفظ الجسر بكل حمولة `FFFA` مختلفة للجهاز كعنصر مستقل في `svcData` (تُرسل الحمولات المتطابقة مرة واحدة، وبحد أقصى 16 عنصرًا لكل جهاز في الفترة)، فلا تضيع أي رسالة. وتُمرَّر حزم رسائل بلوتوث 5 كاملة حتى 255 بايت.
+- **الحماية من الإغراق**: تُرسل كل فترة بلوتوث في دفعات لا تتجاوز 1500 جهاز، وبحد أقصى 3000 جهاز في الفترة. تُقدَّم الأجهزة التي رُصدت في فترات سابقة، ثم الأجهزة التي تحمل بيانات أو اسمًا، ثم الأقوى إشارة. إذا زاد العدد (مثلًا عند بثّ آلاف العناوين الوهمية) يُهمل الباقي ويُسجَّل تحذير من سطر واحد مرة في الدقيقة على الأكثر.
+- **العملاء البطيئون**: يُفصل أي عميل يتوقف عن القراءة بعد 5 ثوانٍ حتى لا يؤخر البيانات عن غيره. يتوقف الجسر خلال ثوانٍ عند الضغط على Ctrl+C، والضغط مرتين يُنهيه فورًا.
 
 ### ملاحظات حسب النظام
 
