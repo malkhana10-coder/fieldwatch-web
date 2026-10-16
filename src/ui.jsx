@@ -62,6 +62,7 @@ const P = {
   eyeOff: 'M9.88 9.88a3 3 0 1 0 4.24 4.24M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68M6.61 6.61A13.53 13.53 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61M2 2l20 20',
   github: 'M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.4 5.4 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4M9 18c-4.51 2-5-2-7-2',
   sparkle: 'M12 3l1.9 5.8L20 10l-6.1 1.2L12 17l-1.9-5.8L4 10l6.1-1.2z',
+  refresh: 'M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8M21 3v5h-5M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16M8 16H3v5',
 }
 
 export function Icon({ name, size = 18, stroke = 2, style, className }) {
@@ -143,6 +144,9 @@ export function Sheet({ title, onClose, children, actions, className = '' }) {
   const ref = useRef(null)
   const closeRef = useRef(onClose)
   closeRef.current = onClose
+  // A click closes the sheet only when it both started and ended on the scrim, so
+  // dragging a text selection out of the sheet doesn't dismiss it.
+  const downOnScrim = useRef(false)
   const titleId = useId()
   useLayoutEffect(() => {
     const node = ref.current
@@ -169,14 +173,19 @@ export function Sheet({ title, onClose, children, actions, className = '' }) {
     return () => {
       document.removeEventListener('keydown', onKey)
       const i = sheetStack.lastIndexOf(node)
+      const wasTop = i >= 0 && i === sheetStack.length - 1
       if (i >= 0) sheetStack.splice(i, 1)
+      // A dialog still open above this one keeps the focus.
+      if (!wasTop) return
       const back = sheetStack[sheetStack.length - 1]
-      if (opener && opener.isConnected && typeof opener.focus === 'function') opener.focus({ preventScroll: true })
+      // Never hand focus to something behind the dialog that is now on top.
+      if (opener && opener.isConnected && typeof opener.focus === 'function' && (!back || back.contains(opener))) opener.focus({ preventScroll: true })
       else if (back) back.focus({ preventScroll: true })
     }
   }, [])
   return (
-    <div className="scrim" onClick={(e) => e.target === e.currentTarget && onClose?.()}>
+    <div className="scrim" onPointerDown={(e) => { downOnScrim.current = e.target === e.currentTarget }}
+      onClick={(e) => { if (e.target === e.currentTarget && downOnScrim.current) onClose?.(); downOnScrim.current = false }}>
       <div ref={ref} className={'sheet ' + className} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
         <div className="sheet-head">
           <div className="grow" id={titleId} style={{ fontWeight: 700, fontSize: 17, minWidth: 0 }}>{title}</div>
