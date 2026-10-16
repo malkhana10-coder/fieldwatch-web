@@ -2,6 +2,7 @@ import { useEffect, useState, Fragment } from 'react'
 import { useEngine, Icon, Seg, Switch, Setting, ConfirmButton } from '../ui.jsx'
 import { download, pickFile } from '../engine/storage.js'
 import { APP_VERSION } from '../engine/engine.js'
+import { isNativeApp } from './format.jsx'
 
 let deferredInstall = null
 if (typeof window !== 'undefined') {
@@ -14,6 +15,7 @@ export function Settings() {
   const s = e.settings
   const [canInstall, setCanInstall] = useState(!!deferredInstall)
   const [showBridge, setShowBridge] = useState(false)
+  const native = isNativeApp()
   useEffect(() => {
     const h = () => setCanInstall(true)
     window.addEventListener('beforeinstallprompt', h)
@@ -51,13 +53,15 @@ export function Settings() {
         <Setting title={t('sound')}><Switch checked={s.sound} onChange={(v) => e.set({ sound: v })} /></Setting>
         <Setting title={t('vibrate')}><Switch checked={s.vibrate} onChange={(v) => e.set({ vibrate: v })} /></Setting>
         <Setting title={t('voice')}><Switch checked={s.voice} onChange={(v) => { e.set({ voice: v }); if (v) e.speak(t('speakHit', { sig: 'Fieldwatch' })) }} /></Setting>
-        <Setting title={t('notify')}><Switch checked={s.notify} onChange={async (v) => {
-          if (v && typeof Notification !== 'undefined' && Notification.permission !== 'granted') {
+        {/* The Android app's WebView has no Notification API, so the switch would do nothing there. */}
+        {!native && <Setting title={t('notify')}><Switch checked={s.notify} onChange={async (v) => {
+          if (v && typeof Notification === 'undefined') return e.toast(t('notSupported'), 'warn')
+          if (v && Notification.permission !== 'granted') {
             const p = await Notification.requestPermission().catch(() => 'denied')
             if (p !== 'granted') return e.toast(t('notSupported'), 'warn')
           }
           e.set({ notify: v })
-        }} /></Setting>
+        }} /></Setting>}
         <Setting title={t('alertCooldown')}>
           <select className="input" style={{ width: 'auto' }} aria-label={t('alertCooldown')} value={s.cooldown} onChange={(ev) => e.set({ cooldown: Number(ev.target.value) })}>
             {[15, 30, 60, 300, 900].map((n) => <option key={n} value={n}>{n >= 60 ? t('nMin', { n: n / 60 }) : t('nSec', { n })}</option>)}
@@ -174,7 +178,8 @@ export function Settings() {
           if (!f) return
           try { e.importSettings(f.text); e.toast('✓') } catch (err) { e.toast(t('importFailed', { e: err.message }), 'warn') }
         }}><Icon name="upload" size={15} />{t('importSettings')}</button>
-        <button className="btn" onClick={() => download('fieldwatch-backup.json', e.exportAll(), 'application/json')}><Icon name="download" size={15} />{t('exportAll')}</button>
+        {/* Like the sit and log exports, the backup holds full MACs and coordinates: off in privacy mode. */}
+        <button className="btn" disabled={s.privacy} title={s.privacy ? t('privacyHint') : undefined} onClick={() => download('fieldwatch-backup.json', e.exportAll(), 'application/json')}><Icon name="download" size={15} />{t('exportAll')}</button>
         <button className="btn" onClick={async () => {
           const f = await pickFile('.json')
           if (!f) return
@@ -182,7 +187,7 @@ export function Settings() {
         }}><Icon name="upload" size={15} />{t('importAll')}</button>
         {canInstall && <button className="btn primary" onClick={async () => { deferredInstall?.prompt(); deferredInstall = null; setCanInstall(false) }}><Icon name="download" size={15} />{t('install')}</button>}
       </div>
-      <div className="small muted" style={{ padding: '0 4px 8px' }}>{t('backupHint')}</div>
+      <div className="small muted" style={{ padding: '0 4px 8px' }}>{t('backupHint')}{s.privacy && <> {t('exportAllPrivacy')}</>}</div>
 
       <div className="section-title">{t('diagnostics')}</div>
       <div className="card card-pad">

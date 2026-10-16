@@ -3,6 +3,7 @@ import { useEngine, Icon, Glyph, Sparkline, Switch } from '../ui.jsx'
 import { maskMac } from '../engine/geo.js'
 import { radioColor } from './Live.jsx'
 import { LocateCard } from './Intel.jsx'
+import { NumUnit } from './format.jsx'
 
 export function Hunt() {
   const e = useEngine()
@@ -84,7 +85,7 @@ export function Hunt() {
           <div className={'hunt-state ' + state}>
             {state === 'hot' ? '▲ ' + t('huntHotter') : state === 'cold' ? '▼ ' + t('huntColder') : state === 'lost' ? t('huntLost') : '• ' + t('huntSteady')}
           </div>
-          <div className="small muted">{t('huntPeak')}: <span className="ltr">{peak.current.v}</span> dBm · {t('rssi')}: <span className="ltr">{r.rssi}</span></div>
+          <div className="small muted">{t('huntPeak')}: <NumUnit v={peak.current.v} u="dBm" /> · {t('rssi')}: <NumUnit v={r.rssi} u="dBm" /></div>
         </div>
         <div style={{ display: 'flex', justifyContent: 'center' }}>
           <Sparkline data={r.history.slice(-90)} width={320} height={60} color={radioColor(e, r) || 'var(--accent)'} />

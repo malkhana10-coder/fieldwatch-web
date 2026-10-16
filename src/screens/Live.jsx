@@ -6,6 +6,7 @@ import { CLASSES } from '../i18n.js'
 import { Filters } from './Filters.jsx'
 import { GeoMap, textNode, mapColors, currentTheme, NIGHT_SHADES } from '../leaflet.jsx'
 import { trackerState } from '../engine/intel.js'
+import { isNativeApp, NumUnit, decodedView } from './format.jsx'
 
 /** Signature colour for a radio; red shades only in the night theme. */
 export function fleetColor(colorIndex, theme = currentTheme()) {
@@ -21,11 +22,13 @@ export function radioColor(engine, r) {
 export function SourcePicker() {
   const e = useEngine()
   const t = e.t
+  // The Android WebView has no Web Bluetooth: offer the option greyed out, pointing to the bridge.
+  const native = isNativeApp()
   return (
-    <select className="input" style={{ width: 'auto', minHeight: 38 }} value={e.settings.source} disabled={e.running}
-      onChange={(ev) => e.set({ source: ev.target.value })} aria-label={t('source')}>
+    <select className="input" style={{ width: 'auto', minHeight: 38, maxWidth: '100%' }} value={e.settings.source} disabled={e.running}
+      onChange={(ev) => e.set({ source: ev.target.value })} aria-label={t('source')} title={native ? t('bleAppHint') : undefined}>
       <option value="demo">{t('sourceDemo')}</option>
-      <option value="ble">{t('sourceBle')}</option>
+      <option value="ble" disabled={native}>{native ? t('sourceBleApp') : t('sourceBle')}</option>
       <option value="bridge">{t('sourceBridge')}</option>
       <option value="replay">{t('sourceReplay')}</option>
     </select>
@@ -41,6 +44,7 @@ function RadioRow({ r, onOpen, now }) {
   const name = e.displayName(r) || (r.hidden ? t('hidden') : t('unknown'))
   const stale = now - r.lastSeen > 15000
   const tr = e.trend(r)
+  const dec0 = r.decoded?.[0] ? decodedView(r.decoded[0], privacy) : null
   return (
     <button className={`radio${r.attention ? ' attn' : ''}${stale ? ' stale' : ''}`} onClick={() => onOpen(r.key)}>
       <Glyph r={r} color={radioColor(e, r)} />
@@ -52,7 +56,7 @@ function RadioRow({ r, onOpen, now }) {
           {e.coTravel(r) && !named?.mine && <span className="tag warn">{t('movingWithYou')}</span>}
           {trackerState(r, now)?.separated && <span className="tag attn">{t('tagSeparated')}</span>}
           {r.prevMacs?.length > 0 && <span className="tag" title={t('rotatedHint')}>↻ {r.prevMacs.length}</span>}
-          {r.drone?.height != null && <span className="tag info"><span className="nowrap">{r.drone.height} {t('m')}</span></span>}
+          {r.drone?.height != null && <span className="tag info"><NumUnit v={r.drone.height} u={t('m')} /></span>}
         </div>
         <div className="radio-meta">
           <span className={'tag ' + (r.kind === 'WIFI' ? 'wifi' : 'ble')}>{r.kind === 'WIFI' ? 'Wi-Fi' : 'BLE'}</span>
@@ -60,7 +64,7 @@ function RadioRow({ r, onOpen, now }) {
           {!fleets.length && (r.vendor || r.company) && <span className="ellipsis" dir="auto" style={{ maxWidth: 180 }}>{r.vendor || r.company}</span>}
           <span className="mono faint">{maskMac(r.mac, privacy)}</span>
           {r.kind === 'WIFI' && r.channel ? <span className="faint nowrap">{t('chN', { n: r.channel })}</span> : null}
-          {r.decoded?.[0] && <span className="faint ellipsis" dir="auto" style={{ maxWidth: 200 }}>{r.decoded[0].label}: {r.decoded[0].value}</span>}
+          {dec0 && <span className="faint ellipsis" dir="auto" style={{ maxWidth: 200 }}>{dec0.label}: {dec0.value}</span>}
         </div>
       </div>
       <div className="rssi">
@@ -315,7 +319,7 @@ export function Live({ onOpen }) {
           <Icon name={e.running ? 'radar' : 'wifi'} size={40} />
           <div>{all.length ? t('noMatchFilters') : t('noRadios')}</div>
           <div className="small faint" style={{ marginTop: 6, maxWidth: 460, marginInline: 'auto' }}>
-            {e.settings.source === 'demo' ? t('sourceDemoHint') : e.settings.source === 'ble' ? t('sourceBleHint') : e.settings.source === 'bridge' ? t('sourceBridgeHint') : t('sourceReplayHint')}
+            {e.settings.source === 'demo' ? t('sourceDemoHint') : e.settings.source === 'ble' ? t(isNativeApp() ? 'bleAppHint' : 'sourceBleHint') : e.settings.source === 'bridge' ? t('sourceBridgeHint') : t('sourceReplayHint')}
           </div>
           {all.length > 0 && <button className="btn" style={{ marginTop: 12 }} onClick={() => e.resetFilters()}>{t('clearFilters')}</button>}
         </div>

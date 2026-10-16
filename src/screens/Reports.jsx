@@ -1,9 +1,33 @@
-import { useState, Fragment } from 'react'
+import { useState, useRef, Fragment } from 'react'
 import { useEngine, Icon, Sheet, fmtDur, copyText, ConfirmButton } from '../ui.jsx'
 import { debrief, compareSits, sitCsv, sitGpx, sitKml, sitWigle, logCsv, aiPrompt } from '../engine/reports.js'
 import { download, inViewer } from '../engine/storage.js'
 import { maskMac } from '../engine/geo.js'
 import { AiPanel } from './Intel.jsx'
+import { isNativeApp, NumUnit, tNode, reportDocument } from './format.jsx'
+
+/** Sit radio entries come from IndexedDB or an imported backup: never assume their arrays exist. */
+const fleetIdsOf = (r) => (Array.isArray(r?.fleetIds) ? r.fleetIds : [])
+
+/**
+ * Save the debrief as a standalone HTML file (the Android app has no print): the sheet's DOM
+ * without buttons or scripts, the app's own CSS inlined, forced to the light theme.
+ */
+function shareReportHtml(node, { t, sit, fname }) {
+  if (!node) return
+  const clone = node.cloneNode(true)
+  clone.querySelectorAll('script, .no-print, button, input, select, textarea, iframe, object, embed').forEach((x) => x.remove())
+  for (const el of [clone, ...clone.querySelectorAll('*')]) for (const a of [...el.attributes]) if (/^on/i.test(a.name)) el.removeAttribute(a.name)
+  let css = ''
+  for (const sheet of document.styleSheets) {
+    let rules
+    try { rules = sheet.cssRules } catch { continue } // cross-origin sheet (Google Fonts): linked instead
+    for (const r of rules) if (!(typeof CSSFontFaceRule !== 'undefined' && r instanceof CSSFontFaceRule)) css += r.cssText + '\n'
+  }
+  const fontHref = document.querySelector('link[rel="stylesheet"][href^="https://fonts.googleapis.com/"]')?.href
+  const html = reportDocument({ title: `${t('appName')} — ${t('report')} · ${sit.name}`, lang: t.lang, dir: t.dir, css, body: clone.outerHTML, fontHref })
+  return download(fname + '.html', html, 'text/html')
+}
 
 function Bar({ label, n, max, color }) {
   return (
@@ -19,7 +43,7 @@ function PathPlot({ sit, privacy }) {
   const e = useEngine()
   const t = e.t
   const pts = [...sit.path]
-  const marks = Object.values(sit.radios).filter((r) => r.pts.length && r.fleetIds.some((id) => e.fleetById(id)?.attentionNote))
+  const marks = Object.values(sit.radios).filter((r) => r?.pts?.length && fleetIdsOf(r).some((id) => e.fleetById(id)?.attentionNote))
   const all = [...pts, ...marks.flatMap((r) => r.pts)]
   if (all.length < 2) return <div className="empty small" style={{ padding: 24 }}><Icon name="pin" size={28} /><div>{t('noGps')}</div></div>
   const lats = all.map((p) => p.lat)
@@ -53,9 +77,12 @@ function Debrief({ sit, onClose }) {
   const max = d.byClass[0]?.[1] || 1
   const fname = sit.name.replace(/[^\w؀-ۿ-]+/g, '_').slice(0, 40)
   const arrow = t.dir === 'rtl' ? '←' : '→'
+  const body = useRef(null)
+  const native = isNativeApp()
+  const dropped = Number(d.dropped ?? sit.dropped) || 0
   return (
     <Sheet title={`${t('debrief')} · ${sit.name}`} onClose={onClose} className="debrief">
-      <div className="stack">
+      <div className="stack" ref={body}>
         <div className="print-only report-head">
           <div style={{ fontSize: 22, fontWeight: 800 }}>{t('appName')} — {t('report')}</div>
           <div style={{ fontSize: 15 }}>{sit.name}</div>
@@ -67,10 +94,13 @@ function Debrief({ sit, onClose }) {
           <button className="btn sm" disabled={privacy} onClick={() => download(fname + '.gpx', sitGpx(sit, e), 'application/gpx+xml')}>{t('exportGpx')}</button>
           <button className="btn sm" disabled={privacy} onClick={() => download(fname + '.kml', sitKml(sit, e), 'application/vnd.google-earth.kml+xml')}>{t('exportKml')}</button>
           <button className="btn sm" disabled={privacy} onClick={() => download(fname + '-wigle.csv', sitWigle(sit), 'text/csv')}>{t('exportWigle')}</button>
-          {!inViewer && <button className="btn sm" onClick={() => window.print()}><Icon name="file" size={14} />{t('printPdf')}</button>}
+          {native
+            ? <button className="btn sm" onClick={() => shareReportHtml(body.current, { t, sit, fname })}><Icon name="file" size={14} />{t('shareReport')}</button>
+            : !inViewer && <button className="btn sm" onClick={() => window.print()}><Icon name="file" size={14} />{t('printPdf')}</button>}
           <button className="btn sm" onClick={() => setPrompt(aiPrompt(sit, e, privacy))}><Icon name="sparkle" size={14} />{t('aiExport')}</button>
         </div>
         {privacy && <div className="note small">{t('privacyHint')}</div>}
+        {dropped > 0 && <div className="note info small">{t('sitDropped', { n: dropped })}</div>}
         <div className="no-print"><AiPanel title={t('aiDebrief')} getPrompt={() => aiPrompt(sit, e, privacy)} /></div>
         <div className="stats">
           <div className="stat"><b>{d.total}</b><span>{t('radios')}</span></div>
@@ -79,7 +109,7 @@ function Debrief({ sit, onClose }) {
           <div className="stat"><b>{fmtDur(d.duration)}</b><span>{t('duration')}</span></div>
         </div>
         <div className="small muted">
-          {t.date(sit.start)} {arrow} {sit.end ? t.date(sit.end) : t('sitRunning')} · Wi-Fi {d.wifi} · BLE {d.ble} · {t('path')} <span className="nowrap">{Math.round(d.pathLen)} {t('m')}</span>
+          {t.date(sit.start)} {arrow} {sit.end ? t.date(sit.end) : t('sitRunning')} · <bdi style={{ whiteSpace: 'nowrap' }}>Wi-Fi {d.wifi}</bdi> · <bdi style={{ whiteSpace: 'nowrap' }}>BLE {d.ble}</bdi> · {t('path')} <NumUnit v={Math.round(d.pathLen)} u={t('m')} />
           {d.floods.length > 0 && <> · {t('floodTitle')}: {d.floods.length} ({d.floodHidden})</>}
         </div>
         <div className="card card-pad"><h3>{t('path')}</h3><PathPlot sit={sit} privacy={privacy} /></div>
@@ -103,19 +133,19 @@ function Debrief({ sit, onClose }) {
           {d.attention.map(({ r, fleets }) => (
             <div key={r.key} style={{ padding: '8px 0', borderBlockEnd: '1px solid var(--line)' }}>
               <div className="row wrap"><b dir="auto">{fleets.map((f) => f.name).join(' + ')}</b><span className={'tag ' + (r.kind === 'WIFI' ? 'wifi' : 'ble')}>{r.kind}</span><span className="mono small faint">{maskMac(r.mac, privacy)}</span></div>
-              <div className="small muted"><bdi>{r.name || '—'}</bdi> · {t('maxLabel')} <span className="ltr">{r.maxRssi} dBm</span> · {fmtDur(r.last - r.first)} · {t.time(r.first)}</div>
+              <div className="small muted"><bdi>{r.name || '—'}</bdi> · {t('maxLabel')} <NumUnit v={r.maxRssi} u="dBm" /> · {fmtDur(r.last - r.first)} · {t.time(r.first)}</div>
             </div>
           ))}
           {!d.attention.length && <span className="faint">—</span>}
         </div>
         <div className="card card-pad">
           <h3>{t('coTravel')} ({d.coTravel.length})</h3>
-          <div className="small muted" style={{ marginBottom: 6 }}>{t('coTravelHint', { m: 200 })}</div>
+          <div className="small muted" style={{ marginBottom: 6 }}>{tNode(t, 'coTravelHint', { m: <NumUnit v={200} u={t('m')} /> })}</div>
           {d.coTravel.map(({ r, spread }) => (
             <div key={r.key} className="row wrap" style={{ padding: '6px 0', borderBlockEnd: '1px solid var(--line)' }}>
-              <b dir="auto">{r.name || (r.fleetIds.map(d.fleetName).join('+')) || '—'}</b>
+              <b dir="auto">{r.name || (fleetIdsOf(r).map(d.fleetName).join('+')) || '—'}</b>
               <span className="mono small faint">{maskMac(r.mac, privacy)}</span>
-              <span className="tag warn"><span className="nowrap">{Math.round(spread)} {t('m')}</span></span>
+              <span className="tag warn"><NumUnit v={Math.round(spread)} u={t('m')} /></span>
               <span className="small muted">{fmtDur(r.last - r.first)}</span>
             </div>
           ))}
@@ -141,11 +171,11 @@ function Compare({ a, b, onClose }) {
   const col = (title, list, cls) => (
     <div className="card card-pad">
       <h3>{title} ({list.length})</h3>
-      {list.sort((x, y) => (y.fleetIds.length - x.fleetIds.length)).slice(0, 100).map((r) => (
+      {list.sort((x, y) => (fleetIdsOf(y).length - fleetIdsOf(x).length)).slice(0, 100).map((r) => (
         <div key={r.key} className="row small" style={{ padding: '3px 0' }}>
           <span className={'tag ' + (r.kind === 'WIFI' ? 'wifi' : 'ble')}>{r.kind}</span>
-          <span className="ellipsis grow" dir="auto">{r.name || r.fleetIds.map((id) => e.fleetById(id)?.name).join('+') || <span className="mono faint">{maskMac(r.mac, privacy)}</span>}</span>
-          {r.fleetIds.some((id) => e.fleetById(id)?.attentionNote) && <span className={'tag ' + cls}>!</span>}
+          <span className="ellipsis grow" dir="auto">{r.name || fleetIdsOf(r).map((id) => e.fleetById(id)?.name).join('+') || <span className="mono faint">{maskMac(r.mac, privacy)}</span>}</span>
+          {fleetIdsOf(r).some((id) => e.fleetById(id)?.attentionNote) && <span className={'tag ' + cls}>!</span>}
         </div>
       ))}
     </div>
@@ -160,6 +190,21 @@ function Compare({ a, b, onClose }) {
     </Sheet>
   )
 }
+
+/**
+ * Sit name with its date/time part (from the first digit on) isolated and kept on one line,
+ * so neither bidi reordering nor wrapping can split "6:20 م". No dir="ltr": the Arabic
+ * date run ends in «م», which must stay on the reading-order side.
+ */
+function SitName({ name }) {
+  const s = String(name ?? '')
+  const i = s.search(/\d/)
+  if (i < 0) return s
+  return <>{s.slice(0, i)}<bdi style={{ whiteSpace: 'nowrap' }}>{s.slice(i)}</bdi></>
+}
+
+// Sit names are capped at 80 characters, so wrapping costs at most a line or two.
+const sitNameStyle = { overflowWrap: 'anywhere', minWidth: 0 }
 
 export function Reports() {
   const e = useEngine()
@@ -187,7 +232,7 @@ export function Reports() {
           <div className="row wrap" style={{ marginTop: 10 }}>
             <span className="dot on" />
             <b>{t('sitRunning')}</b>
-            <span className="muted">{fmtDur(Date.now() - active.start)} · {Object.keys(active.radios).length} {t('radios')} · {active.path.length} {t('points')}</span>
+            <span className="muted">{fmtDur(Date.now() - active.start)} · {t('radiosN', { n: Object.keys(active.radios).length })} · {t('pointsN', { n: active.path.length })}</span>
             <button className="btn sm" onClick={() => setOpen(active.id)}>{t('debrief')}</button>
           </div>
         )}
@@ -201,7 +246,7 @@ export function Reports() {
         {!e.sits.length && <div className="empty">{t('sitNone')}</div>}
         {e.sits.map((s) => {
           const n = Object.keys(s.radios).length
-          const attn = Object.values(s.radios).filter((r) => r.fleetIds.some((id) => e.fleetById(id)?.attentionNote)).length
+          const attn = Object.values(s.radios).filter((r) => fleetIdsOf(r).some((id) => e.fleetById(id)?.attentionNote)).length
           return (
             <div key={s.id} className="sig">
               <input type="checkbox" checked={sel.includes(s.id)} onChange={() => toggleSel(s.id)} aria-label={t('compare')} style={{ accentColor: 'var(--accent)', width: 18, height: 18 }} />
@@ -212,8 +257,9 @@ export function Reports() {
                 </form>
               ) : (
               <button className="grow" style={{ background: 'none', border: 0, padding: 0, textAlign: 'start', minWidth: 0 }} onClick={() => setOpen(s.id)}>
-                <div className="row"><b className="ellipsis">{s.name}</b>{!s.end && <span className="tag ok">●</span>}</div>
-                <div className="tiny faint">{t.date(s.start)} · {fmtDur((s.end || Date.now()) - s.start)} · {n} {t('radios')}{attn ? ` · ${attn} ${t('attention')}` : ''}</div>
+                {/* Wrap instead of an ellipsis: in Arabic a clipped name lost the start of its time ("…:20"). */}
+                <div className="row"><b dir="auto" style={sitNameStyle}><SitName name={s.name} /></b>{!s.end && <span className="tag ok">●</span>}</div>
+                <div className="tiny faint">{t.date(s.start)} · {fmtDur((s.end || Date.now()) - s.start)} · {t('radiosN', { n })}{attn ? ` · ${t('attnN', { n: attn })}` : ''}</div>
               </button>
               )}
               <button className="btn sm icon ghost" aria-label={t('edit')} onClick={() => setRenaming({ id: s.id, name: s.name })}><Icon name="gear" size={15} /></button>

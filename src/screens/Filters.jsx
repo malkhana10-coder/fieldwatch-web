@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useEngine, Sheet, Seg, Switch, Setting, Icon, CLASS_ICON } from '../ui.jsx'
 import { CLASSES } from '../i18n.js'
+import { NumUnit } from './format.jsx'
 
 export function Filters({ onClose }) {
   const e = useEngine()
@@ -21,11 +22,11 @@ export function Filters({ onClose }) {
             <Seg value={f.radio} label={t('fRadio')} onChange={(v) => e.setFilters({ radio: v })} options={[{ value: 'BOTH', label: t('fBoth') }, { value: 'WIFI', label: 'Wi-Fi' }, { value: 'BLE', label: 'BLE' }]} />
           </Setting>
           <div className="setting" style={{ display: 'block' }}>
-            <div className="row"><span className="grow">{t('fMinRssi')}</span><b className="ltr">{f.minRssi} dBm</b></div>
+            <div className="row"><span className="grow">{t('fMinRssi')}</span><b><NumUnit v={f.minRssi} u="dBm" /></b></div>
             <input type="range" min="-100" max="-40" step="1" aria-label={t('fMinRssi')} aria-valuetext={`${f.minRssi} dBm`} value={f.minRssi} onChange={(ev) => e.setFilters({ minRssi: Number(ev.target.value) })} style={{ direction: 'ltr' }} />
           </div>
           <div className="setting" style={{ display: 'block' }}>
-            <div className="row"><span className="grow">{t('fMaxAge')}</span><b className="nowrap">{f.maxAge} {t('seconds')}</b></div>
+            <div className="row"><span className="grow">{t('fMaxAge')}</span><b><NumUnit v={f.maxAge} u={t('seconds')} /></b></div>
             <input type="range" min="10" max="600" step="10" aria-label={t('fMaxAge')} aria-valuetext={`${f.maxAge} ${t('seconds')}`} value={f.maxAge} onChange={(ev) => e.setFilters({ maxAge: Number(ev.target.value) })} style={{ direction: 'ltr' }} />
           </div>
           <Setting title={t('fOnlyMatched')}><Switch checked={f.onlyMatched} onChange={(v) => e.setFilters({ onlyMatched: v })} /></Setting>

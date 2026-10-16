@@ -81,7 +81,7 @@ const en = {
   debrief: 'Debrief', compare: 'Compare', duration: 'Duration', points: 'GPS points', path: 'Path',
   exportCsv: 'CSV', exportJson: 'JSON', exportGpx: 'GPX', exportKml: 'KML', exportWigle: 'WiGLE CSV', printPdf: 'Print / PDF',
   byClass: 'By class', byChannel: 'By channel', topSignatures: 'Top signatures', coTravel: 'Possible co-travel',
-  coTravelHint: 'Heard at several places more than {m} m apart during this sit. A hypothesis, not proof.',
+  coTravelHint: 'Heard at several places more than {m} apart during this sit. A hypothesis, not proof.',
   newInB: 'New in B', goneInB: 'Gone in B', inBoth: 'In both', pickTwo: 'Pick two sits to compare',
   log: 'Log', logRows: '{n} rows in log', exportLog: 'Export log', clearLog: 'Clear log', aiExport: 'AI export (prompt)',
   aiExportHint: 'Builds a plain-text summary you can paste into an assistant. Review it before sharing.',
@@ -167,10 +167,10 @@ const en = {
   droneHeight: 'Height', droneSpeed: 'Speed', droneHeading: 'Heading', droneFromYou: '{d} from you', droneOpDist: 'operator {d} away',
   droneNoFix: 'Waiting for a position', droneMapHint: "Positions come from the drone's own Remote ID broadcast.",
   droneSt0: 'Undeclared', droneSt1: 'On the ground', droneSt2: 'Airborne', droneSt3: 'Emergency', droneSt4: 'Remote ID failure',
-  locateTitle: 'Locate', locateEst: 'Estimated within ±{r} m from {n} readings', locateNeed: 'Walk around the area with location on. Readings so far: {n}.',
+  locateTitle: 'Locate', locateEst: 'Estimated within {r} from {n} readings', locateNeed: 'Walk around the area with location on. Readings so far: {n}.',
   locateHint: 'Works outdoors and in large spaces. Indoors GPS is too coarse — follow the Warmer / Colder gauge instead.',
   locateNoLoc: 'Turn on location in Settings, then walk around, to estimate where this device is.', locateDevice: 'Estimated device position',
-  sourceBridge: 'Bridge (real Wi-Fi + BLE)', sourceBridgeHint: 'Run bridge/fieldwatch_bridge.py on a laptop, Raspberry Pi or Android (Termux), then paste the URL it prints into Settings.',
+  sourceBridge: 'Bridge (real Wi-Fi + BLE)', sourceBridgeHint: 'Run bridge/fieldwatch_bridge.py on a laptop, Raspberry Pi or Android (Termux), then paste the URL it prints into Settings. From an https page or the app, a ws:// bridge must run on this device (ws://127.0.0.1…) or use wss://.',
   bridgeUrl: 'Bridge URL', bridgeUrlHint: 'Printed by the bridge when it starts, token included. Stays on this device and is left out of exports.',
   bridgeNeedUrl: 'Set the bridge URL in Settings first.', bridgeFailed: 'Could not connect to the bridge', bridgeDenied: 'The bridge rejected the token',
   bridge_connecting: 'Connecting…', bridge_open: 'Connected', bridge_retrying: 'Reconnecting…', bridge_closed: 'Disconnected', bridge_denied: 'Token rejected', bridge_error: 'Error',
@@ -180,6 +180,17 @@ const en = {
   aiHint: 'Sends a text summary (names, masked MACs in privacy mode, no coordinates) to Anthropic.',
   aiErr_auth: 'The API key was rejected.', aiErr_rate: 'Rate limited — try again in a minute.', aiErr_refusal: 'Claude declined to analyze this.',
   aiErr_network: 'Could not reach Anthropic. Check your connection.', aiErrOther: 'Analysis failed: {e}',
+  viewCrashed: 'This view stopped because of an error.', resetView: 'Reset this view',
+  mapLoadFailed: 'The map could not be loaded.', retry: 'Retry', mapRetry: 'Retry loading the map',
+  bridgeInsecure: 'From an https page or the app, a ws:// bridge must run on this device (ws://127.0.0.1…) or use wss://.',
+  idTypeOther: 'Reserved ({n})',
+  sitDropped: '{n} more radios were not recorded (sit limit)',
+  shareReport: 'Share report (HTML)',
+  sourceBleApp: 'Web Bluetooth scan (browser only)',
+  bleAppHint: 'The Android app cannot scan Bluetooth by itself yet. Choose Bridge and run the bridge in Termux on this phone, or use the field simulator.',
+  exportAllPrivacy: 'Export all data is off in privacy mode: the backup holds full MAC addresses and coordinates.',
+  radiosN: '{n} radios', pointsN: '{n} GPS points', attnN: '{n} need extra attention',
+  ruleCount_zero: '{n} rules', ruleCount_one: '{n} rule', ruleCount_two: '{n} rules', ruleCount_few: '{n} rules',
   // v1.3.1 UI audit
   ruleCount: '{n} rules', agoMin: '{n}m ago', docTitle: 'Fieldwatch Web', tabsNav: 'Main sections',
   gps: 'GPS', gpsSimulated: 'GPS (simulated)',
@@ -244,18 +255,18 @@ const ar = {
   huntHotter: 'أقرب', huntColder: 'أبعد', huntSteady: 'ثابت', huntLost: 'غير مسموع',
   huntTone: 'نغمة جايجر', huntPeak: 'الذروة',
   huntTip: 'تحرّك ببطء، واستدر بجسمك لحجب الهاتف، وراقب الاتجاه. قوة الإشارة ليست مسافة.',
-  sigCount: '{n} بصمة · {r} قاعدة', catalog: 'الكتالوج', enabled: 'مفعّلة', bookmarked: 'قائمة المراقبة',
+  sigCount: 'البصمات: {n} · القواعد: {r}', catalog: 'الكتالوج', enabled: 'مفعّلة', bookmarked: 'قائمة المراقبة',
   rules: 'القواعد', ruleKind: 'القاعدة', newSignature: 'بصمة جديدة', importSigs: 'استيراد بصمات', exportSigs: 'تصدير البصمات',
   resetCatalog: 'استعادة الكتالوج الأصلي', builtIn: 'أصلية', custom: 'مخصصة', class: 'الفئة', name: 'الاسم',
   matchAny: 'مطابقة أي قاعدة', matchAll: 'مطابقة كل القواعد', attentionNote: 'ملاحظة «يستدعي الانتباه»', sigNotes: 'ملاحظات',
-  enableAll: 'تفعيل الكل', disableAll: 'تعطيل الكل', liveHits: 'مطابقات مباشرة', imported: 'تم استيراد {n} بصمة',
+  enableAll: 'تفعيل الكل', disableAll: 'تعطيل الكل', liveHits: 'مطابقات مباشرة', imported: 'تم استيراد البصمات: {n}',
   importFailed: 'فشل الاستيراد: {e}', confirmReset: 'استبدال جميع البصمات بالكتالوج الأصلي؟',
   sits: 'الجلسات', sit: 'جلسة', startSit: 'بدء جلسة', endSit: 'إنهاء الجلسة', sitRunning: 'جلسة قيد التشغيل', sitNone: 'لا توجد جلسات مسجلة بعد.',
   sitHint: 'تسجّل الجلسة كل ما يُسمع أثناءها: الأجهزة والبصمات و(اختيارياً) موقع هذا الجهاز.',
   debrief: 'ملخص', compare: 'مقارنة', duration: 'المدة', points: 'نقاط GPS', path: 'المسار',
   exportCsv: 'CSV', exportJson: 'JSON', exportGpx: 'GPX', exportKml: 'KML', exportWigle: 'WiGLE CSV', printPdf: 'طباعة / PDF',
   byClass: 'حسب الفئة', byChannel: 'حسب القناة', topSignatures: 'أكثر البصمات', coTravel: 'احتمال مرافقة',
-  coTravelHint: 'سُمع في عدة أماكن تبعد أكثر من {m} م أثناء هذه الجلسة. فرضية وليست دليلاً.',
+  coTravelHint: 'سُمع في عدة أماكن تبعد أكثر من {m} أثناء هذه الجلسة. فرضية وليست دليلاً.',
   newInB: 'جديد في ب', goneInB: 'اختفى في ب', inBoth: 'في كليهما', pickTwo: 'اختر جلستين للمقارنة',
   log: 'السجل', logRows: 'عدد أسطر السجل: {n}', exportLog: 'تصدير السجل', clearLog: 'مسح السجل', aiExport: 'تصدير للذكاء الاصطناعي',
   aiExportHint: 'يُنشئ ملخصاً نصياً يمكنك لصقه في مساعد ذكي. راجعه قبل المشاركة.',
@@ -309,7 +320,7 @@ const ar = {
   addNet: 'إضافة شبكة', netName: 'اسم الشبكة (SSID)', watchedTag: 'مراقَبة', alertWatched: 'شبكة مراقَبة',
   exportAll: 'تصدير كل البيانات', importAll: 'استيراد كل البيانات',
   backupHint: 'الإعدادات والبصمات والجلسات والسجل في ملف واحد.',
-  importedAll: 'تم استيراد {n} جلسة و{m} سطر سجل',
+  importedAll: 'تم الاستيراد — الجلسات: {n}، أسطر السجل: {m}',
   report: 'تقرير', printGenerated: 'أُنشئ بواسطة',
   trackersTitle: 'أدوات التتبع حولك', trackersHint: 'AirTag وSmartTag وTile وأمثالها. الأداة البعيدة عن مالكها والتي تتحرك معك تستحق نظرة.',
   trackerState: 'أداة التتبع', tagSeparated: 'بعيدة عن مالكها',
@@ -331,10 +342,10 @@ const ar = {
   droneHeight: 'الارتفاع', droneSpeed: 'السرعة', droneHeading: 'الاتجاه', droneFromYou: 'على بعد {d} منك', droneOpDist: 'المشغّل على بعد {d}',
   droneNoFix: 'بانتظار تحديد الموقع', droneMapHint: 'المواقع مأخوذة من بث Remote ID الذي ترسله الطائرة المسيّرة نفسها.',
   droneSt0: 'غير محددة', droneSt1: 'على الأرض', droneSt2: 'في الجو', droneSt3: 'طوارئ', droneSt4: 'عطل في Remote ID',
-  locateTitle: 'تحديد المكان', locateEst: 'الموقع التقديري ضمن ±{r} م (عدد القراءات: {n})', locateNeed: 'تجوّل في المكان والموقع مفعّل. القراءات حتى الآن: {n}.',
+  locateTitle: 'تحديد المكان', locateEst: 'الموقع التقديري ضمن {r} (عدد القراءات: {n})', locateNeed: 'تجوّل في المكان والموقع مفعّل. القراءات حتى الآن: {n}.',
   locateHint: 'يعمل في الأماكن المفتوحة والواسعة. داخل المباني يكون GPS غير دقيق، فاعتمد على مؤشر «أقرب/أبعد» بدلاً من ذلك.',
   locateNoLoc: 'فعّل الموقع من الإعدادات ثم تجوّل، لتقدير مكان هذا الجهاز.', locateDevice: 'الموقع التقديري للجهاز',
-  sourceBridge: 'الجسر (Wi-Fi وبلوتوث حقيقي)', sourceBridgeHint: 'شغّل bridge/fieldwatch_bridge.py على لابتوب أو Raspberry Pi أو أندرويد (Termux)، ثم الصق الرابط الذي يطبعه في الإعدادات.',
+  sourceBridge: 'الجسر (Wi-Fi وبلوتوث حقيقي)', sourceBridgeHint: 'شغّل bridge/fieldwatch_bridge.py على لابتوب أو Raspberry Pi أو أندرويد (Termux)، ثم الصق الرابط الذي يطبعه في الإعدادات. من صفحة https أو من التطبيق، يجب أن يعمل جسر \u2066ws://\u2069 على هذا الجهاز نفسه (\u2066ws://127.0.0.1…\u2069) أو أن يستخدم \u2066wss://\u2069.',
   bridgeUrl: 'رابط الجسر', bridgeUrlHint: 'يطبعه الجسر عند تشغيله ومعه رمز الدخول. يبقى على هذا الجهاز ولا يدخل في ملفات التصدير.',
   bridgeNeedUrl: 'أدخل رابط الجسر من الإعدادات أولاً.', bridgeFailed: 'تعذّر الاتصال بالجسر', bridgeDenied: 'رفض الجسر رمز الدخول',
   bridge_connecting: 'جارٍ الاتصال…', bridge_open: 'متصل', bridge_retrying: 'إعادة الاتصال…', bridge_closed: 'غير متصل', bridge_denied: 'الرمز مرفوض', bridge_error: 'خطأ',
@@ -344,6 +355,17 @@ const ar = {
   aiHint: 'يُرسل ملخصاً نصياً (الأسماء، وعناوين MAC مخفية في وضع الخصوصية، بدون إحداثيات) إلى Anthropic.',
   aiErr_auth: 'تم رفض مفتاح API.', aiErr_rate: 'تجاوزت حد الطلبات — حاول بعد دقيقة.', aiErr_refusal: 'اعتذر Claude عن تحليل هذا المحتوى.',
   aiErr_network: 'تعذّر الوصول إلى Anthropic. تحقق من الاتصال.', aiErrOther: 'فشل التحليل: {e}',
+  viewCrashed: 'توقّف هذا العرض بسبب خطأ.', resetView: 'إعادة تشغيل هذا العرض',
+  mapLoadFailed: 'تعذّر تحميل الخريطة.', retry: 'إعادة المحاولة', mapRetry: 'أعد محاولة تحميل الخريطة',
+  bridgeInsecure: 'من صفحة https أو من التطبيق، يجب أن يعمل جسر \u2066ws://\u2069 على هذا الجهاز نفسه (\u2066ws://127.0.0.1…\u2069) أو أن يستخدم \u2066wss://\u2069.',
+  idTypeOther: 'محجوز ({n})',
+  sitDropped: 'لم تُسجَّل أجهزة إضافية: {n} (حد الجلسة)',
+  shareReport: 'مشاركة التقرير (HTML)',
+  sourceBleApp: 'مسح Web Bluetooth (في المتصفح فقط)',
+  bleAppHint: 'لا يستطيع تطبيق أندرويد مسح البلوتوث بنفسه حالياً. اختر «الجسر» وشغّله عبر Termux على هذا الهاتف، أو استخدم المحاكي الميداني.',
+  exportAllPrivacy: 'تصدير كل البيانات معطّل في وضع الخصوصية، لأن النسخة الاحتياطية تتضمن عناوين MAC كاملة وإحداثيات.',
+  radiosN: 'الأجهزة: {n}', pointsN: 'نقاط GPS: {n}', attnN: 'تستدعي الانتباه: {n}',
+  ruleCount_zero: 'بلا قواعد', ruleCount_one: 'قاعدة واحدة', ruleCount_two: 'قاعدتان', ruleCount_few: '{n} قواعد',
   ruleCount: '{n} قاعدة', agoMin: 'قبل {n} د', docTitle: 'فيلدواتش — مراقب ميداني', tabsNav: 'الأقسام الرئيسية',
   gps: 'الموقع (GPS)', gpsSimulated: 'الموقع (GPS محاكى)',
   radioKind: 'نوع الراديو', wifiAp: 'نقطة وصول Wi-Fi', bleLong: 'بلوتوث منخفض الطاقة (BLE)', svcData: 'بيانات الخدمة',
@@ -371,14 +393,24 @@ const ar = {
 
 export const DICT = { en, ar }
 
+// Own-property lookups only: keys can come from untrusted data ('__proto__', 'constructor').
+const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k)
+
 export function makeT(lang) {
-  const d = DICT[lang] || en
+  const d = own(DICT, lang) ? DICT[lang] : en
   const t = (key, vars) => {
-    let s = d[key] ?? en[key] ?? key
+    let s = own(d, key) ? d[key] : own(en, key) ? en[key] : String(key)
     if (vars) for (const [k, v] of Object.entries(vars)) s = s.split(`{${k}}`).join(String(v))
     return s
   }
-  t.cls = (c) => (classLabels[lang] || classLabels.en)[c] || classLabels.en.OTHER
+  const labels = own(classLabels, lang) ? classLabels[lang] : classLabels.en
+  t.cls = (c) => (own(labels, c) ? labels[c] : labels.OTHER)
+  // Plural forms: `key_<category>` (zero/one/two/few/many) when the dictionary has it, else `key`.
+  const pr = typeof Intl !== 'undefined' && Intl.PluralRules ? new Intl.PluralRules(lang === 'ar' ? 'ar' : 'en') : null
+  t.plural = (key, n, vars) => {
+    const k = pr ? key + '_' + pr.select(n) : key
+    return t(own(d, k) ? k : key, { n, ...vars })
+  }
   t.lang = lang
   t.dir = lang === 'ar' ? 'rtl' : 'ltr'
   t.num = (n, opts) => new Intl.NumberFormat(lang === 'ar' ? 'ar-SA-u-nu-latn' : 'en-US', opts).format(n)
