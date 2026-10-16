@@ -33,13 +33,47 @@ function gateOk(gate, p) {
   return gate.op === 'eq' ? eq : !eq
 }
 
-function fmt(n) {
-  return Number.isInteger(n) ? String(n) : n.toFixed(Math.abs(n) < 10 ? 2 : 1).replace(/\.?0+$/, '')
+// Readable precision for ordinary values; fields scaled by less than 1e-5 (Remote ID
+// latitude/longitude use 1e-7) keep every decimal the scale carries, so 24.6912345
+// is not shown as 24.7 (about 1 km off).
+function fmt(n, scale) {
+  if (Number.isInteger(n)) return String(n)
+  let dp = Math.abs(n) < 10 ? 2 : 1
+  const sc = Math.abs(Number(scale))
+  if (sc > 0 && sc < 1e-5) dp = Math.max(dp, Math.min(9, Math.round(-Math.log10(sc))))
+  return n.toFixed(dp).replace(/\.?0+$/, '')
+}
+
+// Words that name a coordinate. 'long' only counts as a whole label ("Lat" / "Long"),
+// never as one word of a longer one ("Long range").
+const COORD_WORDS = new Set(['lat', 'latitude', 'lon', 'lng', 'longitude'])
+
+/**
+ * True for a decoded field (or decode spec field) that holds a latitude or
+ * longitude, judged by its id (`latitude`, `op_lat`, `opLat`, …) or its label
+ * ('Latitude', 'Operator lon', 'خط العرض', …), so the UI can mask it in privacy mode.
+ */
+export function isLocationField(field) {
+  if (!field || typeof field !== 'object') return false
+  const id = typeof field.id === 'string' ? field.id.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase() : ''
+  if (id.split(/[^a-z0-9]+/).some((t) => COORD_WORDS.has(t)) || /^(op|operator|home|takeoff|pilot)(lat|lon|lng)$/.test(id)) return true
+  const label = typeof field.label === 'string' ? field.label.toLowerCase().trim() : ''
+  if (!label) return false
+  if (label === 'long' || /خط\s*(العرض|الطول)/.test(label)) return true
+  return label.split(/[^\p{L}\p{N}]+/u).some((t) => COORD_WORDS.has(t))
+}
+
+// A decode spec can arrive from an imported signature file: only plain values pass.
+const str = (v) => (typeof v === 'string' ? v : '')
+const enumValue = (en, key) => {
+  if (!en || typeof en !== 'object' || !Object.prototype.hasOwnProperty.call(en, key)) return undefined
+  const v = en[key]
+  return typeof v === 'string' || (typeof v === 'number' && Number.isFinite(v)) ? String(v) : undefined
 }
 
 export function decodeFields(fleet, d) {
-  const dec = fleet.decode
-  if (!dec || d.kind !== 'BLE') return []
+  const dec = fleet?.decode
+  if (!dec || typeof dec !== 'object' || d.kind !== 'BLE' || !Array.isArray(dec.fields)) return []
   let payloads = []
   if (dec.source === 'manufacturerData') {
     const want = dec.companyId || null
@@ -53,9 +87,10 @@ export function decodeFields(fleet, d) {
     const p = toBytes(hex)
     if (!p.length) continue
     for (const f of dec.fields) {
-      if (!gateOk(f.when, p)) continue
+      if (!f || typeof f !== 'object' || !Number.isInteger(f.offset)) continue
+      if (!gateOk(f.when && typeof f.when === 'object' ? f.when : null, p)) continue
       const len = f.length ?? TYPE_LEN[f.type] ?? Math.max(0, p.length - f.offset)
-      if (f.offset < 0 || len < 1 || f.offset + len > p.length) continue
+      if (!Number.isInteger(len) || f.offset < 0 || len < 1 || f.offset + len > p.length) continue
       const s = p.slice(f.offset, f.offset + len)
       const le = f.endian !== 'be'
       let num = null
@@ -82,14 +117,17 @@ export function decodeFields(fleet, d) {
       if (!text) continue
       const key = text
       if (num != null && (f.scale != null || f.offsetAdd != null || f.modulo != null)) {
-        if (f.modulo) num %= f.modulo
-        if (f.scale != null) num *= f.scale
-        if (f.offsetAdd != null) num += f.offsetAdd
-        text = fmt(num)
+        if (f.modulo) num %= Number(f.modulo)
+        if (f.scale != null) num *= Number(f.scale)
+        if (f.offsetAdd != null) num += Number(f.offsetAdd)
+        if (!Number.isFinite(num)) continue
+        text = fmt(num, f.scale)
       }
-      const mapped = f.enum?.[key]
+      const mapped = enumValue(f.enum, key)
       const shown = mapped ?? text
-      out.push({ id: f.id, label: f.label || f.id, value: f.unit && !mapped ? `${shown} ${f.unit}` : shown })
+      const id = str(f.id)
+      const unit = str(f.unit)
+      out.push({ id, label: str(f.label) || id, value: unit && !mapped ? `${shown} ${unit}` : shown })
     }
     if (out.length) break
   }

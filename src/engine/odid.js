@@ -41,6 +41,20 @@ export const ID_TYPES = [
 
 export const STATUS = ['Undeclared', 'Ground', 'Airborne', 'Emergency', 'Remote ID system failure']
 
+// 4-bit protocol code (0–15) or null. Every enum the decoder reads is one nibble,
+// so anything else (from a corrupt state or a hand-built message) is dropped.
+const nibble = (v) => (Number.isInteger(v) && v >= 0 && v <= 15 ? v : null)
+const known = (table) => (n) => Number.isInteger(n) && n >= 0 && n < table.length
+/** True when the code has a defined meaning; reserved codes (ID type 5–15, status 5–15) give false. */
+export const isKnownIdType = known(ID_TYPES)
+export const isKnownUaType = known(UA_TYPES)
+export const isKnownStatus = known(STATUS)
+const label = (table) => (n) => (known(table)(n) ? table[n] : nibble(n) !== null ? `Reserved (${n})` : null)
+/** English label; 'Reserved (n)' for a reserved 4-bit code; null when there is no valid code. */
+export const idTypeLabel = label(ID_TYPES)
+export const uaTypeLabel = label(UA_TYPES)
+export const statusLabel = label(STATUS)
+
 const MSG_TYPES = { 0x0: 'basic', 0x1: 'location', 0x2: 'auth', 0x3: 'selfid', 0x4: 'system', 0x5: 'operator', 0xf: 'pack' }
 
 // --- sentinels (opendroneid.h) ---
@@ -273,11 +287,24 @@ const EMPTY = {
 
 function setIf(o, k, v) { if (v !== null && v !== undefined) o[k] = v }
 
+// Copy of an { [idType]: value } map keeping only nibble keys with valid values.
+function cleanByType(o, ok) {
+  const out = {}
+  if (!o || typeof o !== 'object') return out
+  for (const k of Object.keys(o)) {
+    if (/^\d{1,2}$/.test(k) && nibble(Number(k)) !== null && ok(o[k])) out[Number(k)] = o[k]
+  }
+  return out
+}
+
 /** Merge decoded messages into a drone state; returns a NEW object (input untouched). */
 export function mergeDrone(state, msgs, now) {
   const s = { ...EMPTY, ...(state || {}) }
-  s.ids = { ...(state?.ids || {}) }
-  s.uaTypes = { ...(state?.uaTypes || {}) }
+  s.ids = cleanByType(state?.ids, (v) => typeof v === 'string' && v !== '')
+  s.uaTypes = cleanByType(state?.uaTypes, (v) => nibble(v) !== null)
+  s.idType = nibble(s.idType)
+  s.uaType = nibble(s.uaType)
+  s.status = nibble(s.status)
   let track = Array.isArray(state?.track) ? state.track.slice() : []
   const flat = []
   for (const m of msgs || []) {
@@ -288,14 +315,19 @@ export function mergeDrone(state, msgs, now) {
   let lastBasicType = null
   for (const m of flat) {
     switch (m.type) {
-      case 'basic':
-        if (!m.id) break
-        s.ids[m.idType] = m.id
-        s.uaTypes[m.idType] = m.uaType
-        lastBasicType = m.idType
+      case 'basic': {
+        // Reserved ID types (5–15) are kept under their own number; a Basic ID
+        // with no valid ID type or no ID text is ignored.
+        const t = nibble(m.idType)
+        if (t === null || typeof m.id !== 'string' || !m.id) break
+        s.ids[t] = m.id
+        const ua = nibble(m.uaType)
+        if (ua !== null) s.uaTypes[t] = ua
+        lastBasicType = t
         break
+      }
       case 'location': {
-        setIf(s, 'status', m.status)
+        setIf(s, 'status', nibble(m.status))
         setIf(s, 'heightType', m.heightType)
         setIf(s, 'direction', m.direction)
         setIf(s, 'speed', m.speed)
@@ -332,14 +364,20 @@ export function mergeDrone(state, msgs, now) {
         break
     }
   }
-  // Prefer the serial number (idType 1); otherwise the most recently seen ID type.
-  const pick = s.ids[1] !== undefined ? 1 : lastBasicType ?? (s.idType !== null && s.ids[s.idType] !== undefined ? s.idType : null)
-  const fallback = pick === null ? Object.keys(s.ids)[0] : pick
-  if (fallback !== undefined && fallback !== null) {
-    const t = Number(fallback)
-    s.idType = t
-    s.id = s.ids[t]
-    if (s.uaTypes[t] !== undefined) s.uaType = s.uaTypes[t]
+  // Prefer the serial number (idType 1); otherwise the most recently seen defined
+  // ID type. A reserved ID type (5–15) is shown only when no defined one was ever
+  // heard, so a reserved Basic ID can't keep displacing a real one.
+  const has = (t) => t !== null && t !== undefined && s.ids[t] !== undefined
+  const types = Object.keys(s.ids).map(Number)
+  const prev = s.idType
+  const pick = has(1) ? 1
+    : isKnownIdType(lastBasicType) ? lastBasicType
+      : isKnownIdType(prev) && has(prev) ? prev
+        : types.find(isKnownIdType) ?? lastBasicType ?? (has(prev) ? prev : types[0] ?? null)
+  if (pick !== null) {
+    s.idType = pick
+    s.id = s.ids[pick]
+    if (s.uaTypes[pick] !== undefined) s.uaType = s.uaTypes[pick]
   }
   s.track = track
   s.updated = now

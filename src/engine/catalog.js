@@ -3,7 +3,8 @@
 
 const WIFI_PROTOCOL_IE_OUIS = new Set(['0050F2', '000FAC'])
 
-export const hexOnly = (s) => (s || '').replace(/[^0-9a-fA-F]/g, '').toUpperCase()
+// Imported logs and signatures are untrusted: a non-string field must not throw here.
+export const hexOnly = (s) => (typeof s === 'string' ? s : typeof s === 'number' ? String(s) : '').replace(/[^0-9a-fA-F]/g, '').toUpperCase()
 export const normMac = (mac) => {
   const h = hexOnly(mac)
   return h.match(/.{1,2}/g)?.join(':') ?? ''
@@ -43,18 +44,31 @@ const uuidKey = (u) => {
   return h
 }
 
+// Lower-case per UTF-16 unit so pattern and text indices stay aligned (a few
+// characters, such as 'İ', lower-case to two units).
+function lowerUnits(x) {
+  const l = x.toLowerCase()
+  if (l.length === x.length) return l
+  const a = new Array(x.length)
+  for (let k = 0; k < x.length; k++) a[k] = x[k].toLowerCase()
+  return a
+}
+
 /**
  * Case-insensitive glob match (`*` any run, `?` one character) in O(n·m) worst
  * case with no backtracking blow-up — imported signatures are untrusted, and a
- * regex built from `*a*a*a…` would freeze the app on a long name.
+ * regex built from `*a*a*a…` would freeze the app on a long name. Only the
+ * pattern has wildcards: a '*' or '?' in the text is an ordinary character.
+ * Patterns are capped at 256 characters.
  */
 export function globMatch(pattern, text) {
-  const p = String(pattern).toLowerCase().slice(0, 256)
-  const s = String(text).toLowerCase()
+  const p = lowerUnits(String(pattern ?? '').slice(0, 256))
+  const s = lowerUnits(String(text ?? ''))
   let i = 0, j = 0, star = -1, mark = 0
   while (i < s.length) {
-    if (j < p.length && (p[j] === '?' || p[j] === s[i])) { i++; j++ }
-    else if (j < p.length && p[j] === '*') { star = j++; mark = i }
+    // The pattern's '*' is tested first, so a literal '*' in the text can never use it up.
+    if (j < p.length && p[j] === '*') { star = j++; mark = i }
+    else if (j < p.length && (p[j] === '?' || p[j] === s[i])) { i++; j++ }
     else if (star >= 0) { j = star + 1; i = ++mark }
     else return false
   }
@@ -92,7 +106,7 @@ function mfgRecords(d) {
 export function ruleHits(d, rule) {
   if (!rule.enabled && rule.enabled !== undefined) return false
   if (!radioOk(rule, d.kind)) return false
-  const name = d.name || ''
+  const name = typeof d.name === 'string' ? d.name : ''
   switch (rule.kind) {
     case 'OUI': {
       const want = hexOnly(rule.text)
@@ -112,7 +126,7 @@ export function ruleHits(d, rule) {
       return !!want && (d.vendorIe || []).some((v) => hexOnly(v).startsWith(want))
     }
     case 'NAME_CONTAINS':
-      return !!rule.text && !d.hidden && name.toLowerCase().includes(rule.text.toLowerCase())
+      return typeof rule.text === 'string' && !!rule.text && !d.hidden && name.toLowerCase().includes(rule.text.toLowerCase())
     case 'NAME_GLOB':
       return !!rule.text && !d.hidden && !!name && globMatch(rule.text, name)
     case 'SERVICE_UUID': {
@@ -211,21 +225,35 @@ export function matchRadio(compiled, d) {
   return hits
 }
 
-/** Human-readable reasons a radio matched a fleet. */
-export function explainMatch(d, fleet) {
-  return (fleet.rules || []).filter((r) => r.enabled !== false && ruleHits(d, r)).slice(0, 6).map(describeRule)
+/** Human-readable reasons a radio matched a fleet. `privacy` masks address octets after the OUI. */
+export function explainMatch(d, fleet, { privacy = false } = {}) {
+  return (fleet.rules || []).filter((r) => r.enabled !== false && ruleHits(d, r)).slice(0, 6).map((r) => describeRule(r, { privacy }))
 }
 
-export function describeRule(r) {
+// Address prefix for display; with privacy only the first 3 octets (the OUI) stay readable.
+function shownPrefix(text, privacy) {
+  const parts = normMac(text).split(':')
+  return privacy && parts.length > 3 ? [...parts.slice(0, 3), ...parts.slice(3).map(() => '**')].join(':') : parts.join(':')
+}
+
+/** Masks every full MAC address (':' or '-' separated) in free text to its first 3 octets when `on`. */
+export function maskMacText(text, on) {
+  const s = typeof text === 'string' ? text : ''
+  if (!on) return s
+  return s.replace(/\b([0-9A-Fa-f]{2})([:-])([0-9A-Fa-f]{2})\2([0-9A-Fa-f]{2})(?:\2[0-9A-Fa-f]{2}){3}\b/g, (_, a, sep, b, c) => [a, b, c, '**', '**', '**'].join(sep))
+}
+
+export function describeRule(r, { privacy = false } = {}) {
   const radio = r.radio ? ` · ${r.radio === 'WIFI' ? 'Wi-Fi' : 'BLE'}` : ''
+  const text = typeof r.text === 'string' ? r.text : ''
   switch (r.kind) {
-    case 'OUI': return `OUI ${normMac(r.text)}${radio}`
-    case 'MAC_PREFIX': return `MAC ${normMac(r.text)}${radio}`
-    case 'VENDOR_IE_OUI': return `Vendor IE ${normMac(r.text)}`
-    case 'NAME_GLOB': return `Name ≈ "${r.text}"${radio}`
-    case 'NAME_CONTAINS': return `Name ∋ "${r.text}"${radio}`
-    case 'SERVICE_UUID': return `Service UUID ${r.text.toUpperCase()}`
-    case 'SERVICE_DATA': return `Service data ${r.text.toUpperCase()} ${r.dataPrefixHex || ''}`.trim()
+    case 'OUI': return `OUI ${shownPrefix(text, privacy)}${radio}`
+    case 'MAC_PREFIX': return `MAC ${shownPrefix(text, privacy)}${radio}`
+    case 'VENDOR_IE_OUI': return `Vendor IE ${normMac(text)}`
+    case 'NAME_GLOB': return `Name ≈ "${text}"${radio}`
+    case 'NAME_CONTAINS': return `Name ∋ "${text}"${radio}`
+    case 'SERVICE_UUID': return `Service UUID ${text.toUpperCase()}`
+    case 'SERVICE_DATA': return `Service data ${text.toUpperCase()} ${r.dataPrefixHex || ''}`.trim()
     case 'MANUFACTURER_ID': return `Company 0x${hex4(r.companyId)}`
     case 'MANUFACTURER_DATA': return `Company 0x${hex4(r.companyId)} · ${r.dataPrefixHex}`
     case 'HIDDEN_SSID': return 'Hidden SSID'
@@ -236,14 +264,25 @@ export function describeRule(r) {
 
 export const hex4 = (n) => (n >>> 0).toString(16).toUpperCase().padStart(4, '0')
 
-/** Build a custom fleet from a heard radio (port of SignatureEngine.suggestFleet). */
-export function suggestFleet(d) {
-  const rules = [{ kind: 'MAC_PREFIX', text: normMac(d.mac), companyId: 0, dataPrefixHex: '', radio: null, enabled: true }]
-  if (d.name && !d.hidden) {
-    const m = d.name.match(/^([A-Za-z][A-Za-z ._-]{2,})[-_ ]?[0-9A-Fa-f]{2,}$/)
+/**
+ * Build a custom fleet from a heard radio (port of SignatureEngine.suggestFleet).
+ * With `privacy` the device-specific part of the address (octets 4–6) appears in
+ * no rule, name or note: the address rule keeps only the first 3 octets (OUI),
+ * and is left disabled when name / UUID / manufacturer rules can match instead,
+ * because a bare OUI rule matches every device with that prefix.
+ */
+export function suggestFleet(d, { privacy = false } = {}) {
+  const mac = normMac(d.mac)
+  const octets = mac ? mac.split(':') : []
+  const oui = octets.slice(0, 3).join(':')
+  const kindLabel = d.kind === 'WIFI' ? 'Wi-Fi' : 'BLE'
+  const devName = typeof d.name === 'string' ? d.name : ''
+  const rules = [{ kind: 'MAC_PREFIX', text: privacy ? oui : mac, companyId: 0, dataPrefixHex: '', radio: null, enabled: true }]
+  if (devName && !d.hidden) {
+    const m = devName.match(/^([A-Za-z][A-Za-z ._-]{2,})[-_ ]?[0-9A-Fa-f]{2,}$/)
     rules.push(m
       ? { kind: 'NAME_GLOB', text: m[1] + '*', companyId: 0, dataPrefixHex: '', radio: null, enabled: true }
-      : { kind: 'NAME_CONTAINS', text: d.name.slice(0, 32), companyId: 0, dataPrefixHex: '', radio: null, enabled: true })
+      : { kind: 'NAME_CONTAINS', text: devName.slice(0, 32), companyId: 0, dataPrefixHex: '', radio: null, enabled: true })
   }
   for (const u of (d.uuids || []).slice(0, 3)) {
     const h = hexOnly(u)
@@ -257,13 +296,23 @@ export function suggestFleet(d) {
       ? { kind: 'MANUFACTURER_DATA', text: '', companyId: m0.companyId, dataPrefixHex: p, radio: null, enabled: true }
       : { kind: 'MANUFACTURER_ID', text: '', companyId: m0.companyId, dataPrefixHex: '', radio: null, enabled: true })
   }
-  const name = d.name && !d.hidden ? d.name.replace(/[^A-Za-z0-9 _.-]/g, '').slice(0, 22) : `${d.kind === 'WIFI' ? 'Wi-Fi' : 'BLE'} ${normMac(d.mac).slice(-8)}`
+  let privacyNote = ''
+  if (privacy && octets.length > 3) {
+    if (rules.length > 1) {
+      rules[0].enabled = false
+      privacyNote = ' Privacy mode: only the first 3 octets of the address were kept; that rule is off because it would match every device with the same prefix.'
+    } else {
+      privacyNote = ' Privacy mode: only the first 3 octets of the address were kept, so this signature may also match other devices with the same prefix.'
+    }
+  }
+  const name = devName && !d.hidden ? devName.replace(/[^A-Za-z0-9 _.-]/g, '').slice(0, 22) : `${kindLabel} ${privacy ? oui : mac.slice(-8)}`
+  const shownMac = privacy && octets.length > 3 ? `${oui}:**:**:**` : mac
   return {
     id: 'custom-' + Math.random().toString(36).slice(2, 10),
     name: name || 'Custom signature',
     enabled: true, matchAny: true, colorIndex: d.kind === 'BLE' ? 3 : 0, rules,
     minPeers: 0, peerWindowSec: 60, clusterByOui: false, sequentialMac: false,
-    notes: `Created from ${d.kind === 'WIFI' ? 'Wi-Fi' : 'BLE'} ${normMac(d.mac)}.${d.randomized ? ' Address is randomized and may change; prefer name / UUID / manufacturer rules.' : ''}`,
+    notes: `Created from ${kindLabel} ${shownMac}.${d.randomized ? ' Address is randomized and may change; prefer name / UUID / manufacturer rules.' : ''}${privacyNote}`,
     attentionNote: '', builtIn: false, kind: 'OTHER',
   }
 }
