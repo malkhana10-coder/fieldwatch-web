@@ -157,6 +157,7 @@ export function Dashboard({ onOpen }) {
                 <div className="rssi"><b className="ltr">{r.rssi}</b><Bars rssi={r.rssi} /></div>
               </button>
             )) : <span className="faint small">{t('trackNone')}</span>}
+            <div className="tiny faint" style={{ marginTop: 8 }}>{t('trackHint')}</div>
           </div>
 
           <div className="card card-pad">

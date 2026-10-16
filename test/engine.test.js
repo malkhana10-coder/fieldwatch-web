@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { compileCatalog, matchRadio, globToRegex, isRandomized, suggestFleet } from '../src/engine/catalog.js'
 import { decodeFields } from '../src/engine/decode.js'
@@ -107,6 +107,62 @@ describe('backup + telegram', () => {
   })
 })
 
+describe('telegram credentials stay on the device', () => {
+  const secret = { tgEnabled: true, tgToken: '111:SECRET', tgChatId: '42' }
+  it('exports never contain the token or chat ID', () => {
+    const before = { ...engine.settings }
+    Object.assign(engine.settings, secret)
+    for (const text of [engine.exportSettings(), engine.exportAll()]) {
+      expect(text).not.toContain('111:SECRET')
+      const j = JSON.parse(text)
+      expect(j.settings).not.toHaveProperty('tgToken')
+      expect(j.settings).not.toHaveProperty('tgChatId')
+      expect(j.settings).not.toHaveProperty('tgEnabled')
+    }
+    engine.settings = before
+  })
+  it('imports cannot redirect alerts to another bot', async () => {
+    const before = { ...engine.settings }
+    Object.assign(engine.settings, { tgEnabled: false, tgToken: 'mine', tgChatId: '1' })
+    const evil = { tgEnabled: true, tgToken: '999:EVIL', tgChatId: '666' }
+    engine.importSettings(JSON.stringify({ format: 'fieldwatch-web-settings', settings: { ...evil, privacy: true } }))
+    const backup = JSON.parse(engine.exportAll())
+    backup.settings = { ...backup.settings, ...evil }
+    await engine.importAll(JSON.stringify(backup))
+    expect(engine.settings.tgToken).toBe('mine')
+    expect(engine.settings.tgChatId).toBe('1')
+    expect(engine.settings.tgEnabled).toBe(false)
+    expect(engine.settings.privacy).toBe(true)
+    engine.settings = before
+  })
+})
+
+describe('telegram batching', () => {
+  it('batches a burst into one rate-limited message and masks MACs in privacy mode', async () => {
+    vi.useFakeTimers()
+    const before = { ...engine.settings }
+    Object.assign(engine.settings, { tgEnabled: true, privacy: true })
+    const sent = []
+    const orig = engine.sendTelegram
+    engine.sendTelegram = async (text) => { sent.push(text); return null }
+    engine.tgNextAt = 0
+    for (let i = 0; i < 30; i++) engine.notifyTelegram('line ' + i)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(sent.length).toBe(1)
+    expect(sent[0].split('\n').length).toBe(21) // 20 kept + "+10 skipped"
+    expect(sent[0]).toContain('10')
+    engine.notifyTelegram('next')
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(sent.length).toBe(1) // still inside the minimum gap
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(sent.length).toBe(2)
+    expect(engine.tgName({ key: 'BLE:x', name: '', mac: 'AA:BB:CC:DD:EE:FF' })).not.toContain('EE:FF')
+    engine.sendTelegram = orig
+    engine.settings = before
+    vi.useRealTimers()
+  })
+})
+
 describe('watched networks', () => {
   it('watchedNetFor matches SSID case-insensitively', () => {
     const before = engine.settings.watchedNets
@@ -133,6 +189,31 @@ describe('detectors', () => {
     expect(a.level).toBe('MEDIUM')
     expect(a.reasons.length).toBe(1)
     expect(a.reasons[0].why).toBe('whyFinder')
+  })
+
+  it('trackingAssessment ignores a companion phone on a short trip and needs several for MEDIUM', () => {
+    const now = Date.now()
+    const phone = (i, minutes, far) => ({
+      key: 'BLE:00:00:00:00:00:0' + i, kind: 'BLE', mac: '00:00:00:00:00:0' + i,
+      name: 'iPhone', rssi: -60, lastSeen: now, firstSeen: now - minutes * 60 * 1000,
+      positions: [{ lat: 24.7, lon: 46.6 }, { lat: 24.7, lon: 46.6 + far / 2 }, { lat: 24.7, lon: 46.6 + far }],
+      fleetIds: [], cls: 'PHONE', attention: false, randomized: false, vendor: 'Apple', hidden: false, history: [],
+    })
+    const add = (rs) => rs.forEach((r) => engine.radios.set(r.key, r))
+    const del = (rs) => rs.forEach((r) => engine.radios.delete(r.key))
+    const short = [phone(1, 5, 0.003)] // ~300 m over 5 min
+    add(short)
+    expect(engine.trackingAssessment().level).toBe('LOW')
+    del(short)
+    const long = [phone(1, 20, 0.02), phone(2, 20, 0.02)] // ~2 km over 20 min
+    add(long)
+    const a = engine.trackingAssessment()
+    expect(a.reasons.length).toBe(2)
+    expect(a.level).toBe('LOW')
+    const third = [phone(3, 20, 0.02)]
+    add(third)
+    expect(engine.trackingAssessment().level).toBe('MEDIUM')
+    del([...long, ...third])
   })
 
   it('hiddenDevices flags hidden SSID and anonymous randomized BLE', () => {

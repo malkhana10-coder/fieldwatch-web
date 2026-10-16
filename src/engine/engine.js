@@ -5,10 +5,18 @@ import { decodeFields } from './decode.js'
 import { loadRadioDb, ouiVendor, companyName } from './lookup.js'
 import { Simulator } from './simulator.js'
 import { ls, idb } from './storage.js'
-import { distM } from './geo.js'
+import { distM, maskMac } from './geo.js'
 import { makeT } from '../i18n.js'
 
 const DEFAULT_FILTERS = { radio: 'BOTH', minRssi: -100, onlyMatched: false, onlyAttention: false, hideMine: false, hideRandom: false, classes: [], maxAge: 60, q: '' }
+
+/** Settings safe to put in a file: drops `accepted` and the device-only Telegram fields. */
+function portableSettings(settings) {
+  const out = { ...settings }
+  delete out.accepted
+  for (const k of DEVICE_ONLY_SETTINGS) delete out[k]
+  return out
+}
 
 function defaultSettings() {
   let lang = 'en'
@@ -22,6 +30,11 @@ function defaultSettings() {
 }
 
 const LOG_CAP = 6000
+// Telegram credentials never leave this device: they are stripped from every
+// export and ignored on every import.
+const DEVICE_ONLY_SETTINGS = ['tgEnabled', 'tgToken', 'tgChatId']
+const TG_MIN_GAP_MS = 5000
+const TG_QUEUE_CAP = 20
 const HISTORY_CAP = 180
 const PRUNE_MS = 10 * 60 * 1000
 
@@ -57,6 +70,10 @@ class Engine {
     this.stats = { packets: 0, started: 0 }
     this.lastAlert = new Map()
     this.audio = null
+    this.tgQueue = []
+    this.tgDropped = 0
+    this.tgTimer = null
+    this.tgNextAt = 0
     this.t = makeT(this.settings.lang)
     if (typeof window !== 'undefined') {
       window.addEventListener('fw-download-unavailable', (ev) => this.toast(this.t('downloadUnavailable', { ext: ev.detail.toUpperCase() }), 'warn'))
@@ -269,10 +286,10 @@ class Engine {
     const b = h.slice(-8, -3).reduce((s, [, v]) => s + v, 0) / Math.max(1, h.slice(-8, -3).length)
     return a - b
   }
-  coTravel(r) {
+  coTravel(r, minM = 200, minMs = 3 * 60 * 1000) {
     if (r.positions.length < 3) return false
     const first = r.positions[0]
-    return r.positions.some((p) => distM(first, p) > 200) && r.lastSeen - r.firstSeen > 3 * 60 * 1000
+    return r.positions.some((p) => distM(first, p) > minM) && r.lastSeen - r.firstSeen > minMs
   }
 
   /** Sentinel mode: announce any brand-new device. */
@@ -280,25 +297,35 @@ class Engine {
     if (this.isMine(r) || this.hiddenKeys.has(r.key)) return
     const nm = this.displayName(r) || r.mac
     this.toast(`${this.t('newDevice')}: ${nm}`, 'info', r.key)
-    if (this.settings.tgEnabled) this.sendTelegram(`${this.t('newDevice')}: ${nm} (${r.kind}) @ ${r.rssi} dBm`)
+    this.notifyTelegram(`${this.t('newDevice')}: ${this.tgName(r)} (${r.kind}) @ ${r.rssi} dBm`)
   }
 
-  /** Heuristic: how likely the user is being followed. Returns { level, reasons:[{r,why}] }. */
+  /**
+   * Heuristic: how likely the user is being followed. Returns { level, reasons:[{r,why}] }.
+   * Trackers and Extra-attention devices are strong evidence after the normal co-travel
+   * test. Anything else (a companion's phone, the car's own radios) must travel with
+   * you much longer and further, and only several of them together raise the level.
+   */
   trackingAssessment(now = Date.now()) {
     const reasons = []
+    let strong = 0
     for (const r of this.radios.values()) {
       if (now - r.lastSeen > 10 * 60 * 1000) continue
       if (this.isMine(r)) continue
-      if (!this.coTravel(r)) continue
+      const isStrong = r.cls === 'FINDER' || r.attention
+      if (!(isStrong ? this.coTravel(r) : this.coTravel(r, 1000, 10 * 60 * 1000))) continue
       let why
       if (r.cls === 'FINDER') why = 'whyFinder'
       else if (r.attention) why = 'whyAttn'
       else if (r.kind === 'BLE' && r.randomized) why = 'whyBle'
       else why = 'whyCotravel'
+      if (isStrong) strong++
       reasons.push({ r, why })
     }
     reasons.sort((a, b) => b.r.rssi - a.r.rssi)
-    const level = reasons.length >= 3 ? 'HIGH' : reasons.length >= 1 ? 'MEDIUM' : 'LOW'
+    const weak = reasons.length - strong
+    const level = strong >= 2 || (strong >= 1 && weak >= 2) ? 'HIGH'
+      : strong >= 1 || weak >= 3 ? 'MEDIUM' : 'LOW'
     return { level, reasons }
   }
 
@@ -336,7 +363,7 @@ class Engine {
     if (now < this.floodHoldUntil) { this.toast(this.t('floodTitle') + ' · ' + keys.length, 'warn'); return }
     this.flood = { open: true, n: keys.length, keys, t: now }
     this.floodHoldUntil = now + 15 * 60 * 1000
-    if (this.settings.tgEnabled) this.sendTelegram(`${this.t('floodTitle')}: ${keys.length}`)
+    this.notifyTelegram(`${this.t('floodTitle')}: ${keys.length}`)
     this.beep(520, 0.25)
   }
   resolveFlood(hide) {
@@ -369,7 +396,7 @@ class Engine {
     if (this.settings.notify && typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.hidden) {
       try { new Notification(t('alertTitle'), { body, tag: r.key, icon: 'icon.svg' }) } catch { /* ignore */ }
     }
-    if (this.settings.tgEnabled) this.sendTelegram(`${t('alertTitle')}: ${sig} — ${this.displayName(r) || r.mac} @ ${r.rssi} dBm`)
+    this.notifyTelegram(`${t('alertTitle')}: ${sig} — ${this.tgName(r)} @ ${r.rssi} dBm`)
   }
 
   toast(text, kind = 'info', key) {
@@ -414,6 +441,29 @@ class Engine {
       speechSynthesis.cancel()
       speechSynthesis.speak(u)
     } catch { /* ignore */ }
+  }
+
+  /** Name for an outgoing Telegram line; honours privacy mode like the screen does. */
+  tgName(r) { return this.displayName(r) || maskMac(r.mac, this.settings.privacy) }
+
+  /**
+   * Queue an alert line for Telegram. Lines are batched into one message at most
+   * every TG_MIN_GAP_MS so a busy place (or sentinel mode) can't flood the bot or
+   * hit Telegram's rate limit; overflow is summarised as "+N more".
+   */
+  notifyTelegram(text) {
+    if (!this.settings.tgEnabled) return
+    this.tgQueue.push(text)
+    if (this.tgQueue.length > TG_QUEUE_CAP) this.tgDropped += this.tgQueue.splice(0, this.tgQueue.length - TG_QUEUE_CAP).length
+    if (!this.tgTimer) this.tgTimer = setTimeout(() => this.flushTelegram(), Math.max(0, this.tgNextAt - Date.now()))
+  }
+  async flushTelegram() {
+    this.tgTimer = null
+    if (!this.tgQueue.length) return
+    const lines = this.tgQueue.splice(0)
+    if (this.tgDropped) { lines.unshift(this.t('tgMore', { n: this.tgDropped })); this.tgDropped = 0 }
+    this.tgNextAt = Date.now() + TG_MIN_GAP_MS
+    await this.sendTelegram(lines.join('\n').slice(0, 4000))
   }
 
   /** Fire-and-forget push to the user's own Telegram bot (Bot API). Token is the user's, entered at runtime. */
@@ -617,12 +667,12 @@ class Engine {
 
   // ---------- settings exchange ----------
   exportSettings() {
-    return JSON.stringify({ format: 'fieldwatch-web-settings', version: 1, settings: { ...this.settings, accepted: undefined }, named: this.named, watch: [...this.watch] }, null, 1)
+    return JSON.stringify({ format: 'fieldwatch-web-settings', version: 1, settings: portableSettings(this.settings), named: this.named, watch: [...this.watch] }, null, 1)
   }
   importSettings(text) {
     const j = JSON.parse(text)
     if (j.format !== 'fieldwatch-web-settings') throw new Error('not a Fieldwatch web settings file')
-    if (j.settings && typeof j.settings === 'object') this.set({ ...j.settings, accepted: true })
+    if (j.settings && typeof j.settings === 'object') this.set({ ...portableSettings(j.settings), accepted: true })
     if (j.named && typeof j.named === 'object') { this.named = j.named; ls.set('named', this.named) }
     if (Array.isArray(j.watch)) { this.watch = new Set(j.watch); ls.set('watch', j.watch) }
     this.emit()
@@ -630,14 +680,14 @@ class Engine {
   exportAll() {
     return JSON.stringify({
       format: 'fieldwatch-web-backup', version: 1, exportedAt: new Date().toISOString(),
-      settings: { ...this.settings, accepted: undefined }, named: this.named, watch: [...this.watch],
+      settings: portableSettings(this.settings), named: this.named, watch: [...this.watch],
       fleets: this.fleets, sits: this.sits, log: this.log,
     }, null, 1)
   }
   async importAll(text) {
     const j = JSON.parse(text)
     if (j.format !== 'fieldwatch-web-backup') throw new Error('not a Fieldwatch backup file')
-    if (j.settings && typeof j.settings === 'object') this.set({ ...j.settings, accepted: true })
+    if (j.settings && typeof j.settings === 'object') this.set({ ...portableSettings(j.settings), accepted: true })
     if (j.named && typeof j.named === 'object') { this.named = j.named; ls.set('named', this.named) }
     if (Array.isArray(j.watch)) { this.watch = new Set(j.watch); ls.set('watch', j.watch) }
     if (Array.isArray(j.fleets) && j.fleets.length) await this.saveFleets(j.fleets)

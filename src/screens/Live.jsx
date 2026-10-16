@@ -210,17 +210,30 @@ function MapView({ radios, onOpen }) {
   const layer = useRef(null)
   const fitted = useRef(false)
 
-  // init the OpenStreetMap once
+  // Leaflet is bundled and loaded on first use, so the app shell works offline
+  // (only the OpenStreetMap tiles need the network).
+  const [L, setL] = useState(null)
   useEffect(() => {
-    if (!window.L || !mapRef.current || map.current) return
-    const m = window.L.map(mapRef.current, { zoomControl: true })
-    window.L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    let live = true
+    Promise.all([import('leaflet'), import('leaflet/dist/leaflet.css')])
+      .then(([mod]) => { if (live) setL(mod.default || mod) })
+      .catch(() => { /* offline before first load: the map card stays empty */ })
+    return () => { live = false }
+  }, [])
+
+  const hasData = radios.some((r) => r.positions.length) || (e.activeSit()?.path?.length >= 2) || !!e.pos
+
+  // init the OpenStreetMap once Leaflet is loaded and the map container exists
+  useEffect(() => {
+    if (!L || !hasData || !mapRef.current || map.current) return
+    const m = L.map(mapRef.current, { zoomControl: true })
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19, attribution: '&copy; OpenStreetMap contributors',
     }).addTo(m)
-    layer.current = window.L.layerGroup().addTo(m)
+    layer.current = L.layerGroup().addTo(m)
     map.current = m
     return () => { try { m.remove() } catch { /* ignore */ } map.current = null; layer.current = null; fitted.current = false }
-  }, [])
+  }, [L, hasData])
 
   // redraw path + markers each render; auto-fit only the first time
   useEffect(() => {
@@ -237,11 +250,11 @@ function MapView({ radios, onOpen }) {
       }
     }
     if (path.length > 1) {
-      window.L.polyline(path.map((p) => [p.lat, p.lon]), { color: '#0a8f5a', weight: 3, opacity: 0.8 }).addTo(lg)
+      L.polyline(path.map((p) => [p.lat, p.lon]), { color: '#0a8f5a', weight: 3, opacity: 0.8 }).addTo(lg)
     }
     for (const p of marks) {
       const col = mapHex(e, p.r)
-      const mk = window.L.circleMarker([p.lat, p.lon], {
+      const mk = L.circleMarker([p.lat, p.lon], {
         radius: p.r.attention ? 8 : 5, color: p.r.attention ? '#c62839' : col, weight: 1.5,
         fillColor: p.r.attention ? '#c62839' : col, fillOpacity: 0.9,
       })
@@ -251,18 +264,16 @@ function MapView({ radios, onOpen }) {
     }
     const you = e.pos || path[path.length - 1]
     if (you) {
-      window.L.circleMarker([you.lat, you.lon], { radius: 7, color: '#0f1a17', weight: 2, fillColor: '#ffffff', fillOpacity: 1 })
+      L.circleMarker([you.lat, you.lon], { radius: 7, color: '#0f1a17', weight: 2, fillColor: '#ffffff', fillOpacity: 1 })
         .addTo(lg).bindPopup(t('mapYou'))
     }
     const all = [...path, ...marks]
     if (!fitted.current) {
-      if (all.length >= 2) map.current.fitBounds(window.L.latLngBounds(all.map((p) => [p.lat, p.lon])), { padding: [36, 36] })
+      if (all.length >= 2) map.current.fitBounds(L.latLngBounds(all.map((p) => [p.lat, p.lon])), { padding: [36, 36] })
       else if (you) map.current.setView([you.lat, you.lon], 15)
       if (all.length >= 2 || you) fitted.current = true
     }
   })
-
-  const hasData = radios.some((r) => r.positions.length) || (e.activeSit()?.path?.length >= 2) || !!e.pos
 
   return (
     <div className="card">

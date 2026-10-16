@@ -75,11 +75,11 @@ export function Settings() {
           if (!cur.some((w) => w.toLowerCase() === v.toLowerCase())) e.set({ watchedNets: [...cur, v] })
           ev.target.net.value = ''
         }}>
-          <div className="grow">
+          <div className="grow" style={{ flex: '1 0 100%' }}>
             <div>{t('watchedNets')}</div>
             <div className="small muted">{t('watchedNetsHint')}</div>
           </div>
-          <input className="input" name="net" placeholder={t('netName')} style={{ width: 180, minHeight: 38 }} />
+          <input className="input grow" name="net" placeholder={t('netName')} style={{ minWidth: 0, minHeight: 38 }} />
           <button className="btn sm" type="submit"><Icon name="plus" size={14} />{t('addNet')}</button>
         </form>
         {(s.watchedNets || []).length > 0 && (
@@ -102,8 +102,7 @@ export function Settings() {
           <div style={{ flex: '1 0 100%' }}>{t('tgChatId')}</div>
           <input className="input" dir="ltr" value={s.tgChatId || ''} placeholder="123456789" autoComplete="off" onChange={(ev) => e.set({ tgChatId: ev.target.value.trim() })} />
         </div>
-        <div className="setting">
-          <span className="grow small muted">{t('tgHint')}</span>
+        <div className="setting" style={{ justifyContent: 'flex-end' }}>
           <button className="btn sm" onClick={async () => {
             if (!s.tgToken || !s.tgChatId) return e.toast(t('tgNeedToken'), 'warn')
             const err = await e.sendTelegram(t('appName') + ' — ' + t('tgTest'))

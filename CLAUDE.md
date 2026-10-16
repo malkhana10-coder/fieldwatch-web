@@ -8,7 +8,7 @@ An **unofficial bilingual (Arabic/English) web port** of [Fieldwatch](https://gi
 - Node 20+ required. Build/test:
   ```bash
   npm ci
-  npm test        # 18 unit tests — must all pass
+  npm test        # all unit tests must pass
   npm run build   # outputs dist/
   ```
 
@@ -26,7 +26,8 @@ An **unofficial bilingual (Arabic/English) web port** of [Fieldwatch](https://gi
 - Bilingual: add every string to both `en` and `ar` in `src/i18n.js`. App is RTL in Arabic.
 - UI primitives in `src/ui.jsx` (`Icon`, `Sheet`, `Seg`, `Switch`, `Setting`, `Glyph`, `Bars`, `ConfirmButton`). Icons are inline SVG paths keyed by name.
 - Radio colour: `radioColor(engine, r)` in `Live.jsx` returns a CSS var (`var(--danger)`) or a PALETTE hex. For Leaflet (real map) use the local `mapHex()` which returns actual hex.
-- Real map uses Leaflet (CDN in `index.html`) + OpenStreetMap tiles — needs internet.
+- Real map uses Leaflet (npm dependency, lazy-loaded by `MapView` so it works offline) + OpenStreetMap tiles — the tiles need internet.
+- Telegram token/chat ID are device-only: `portableSettings()` strips them from every export and import. Send alerts through `notifyTelegram()` (batched + rate-limited), not `sendTelegram()` directly.
 - Keep `LICENSE` and `NOTICE`. Never commit tokens.
 
 ## Recent changes (v1.2.0)

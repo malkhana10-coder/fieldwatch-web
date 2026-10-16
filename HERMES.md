@@ -6,7 +6,7 @@ This is **Fieldwatch Web**, a static web app (Vite + React). There is no backend
 
 ```bash
 npm ci
-npm test          # 12 unit tests, all must pass
+npm test          # all unit tests must pass
 npm run build     # output goes to dist/
 ```
 
