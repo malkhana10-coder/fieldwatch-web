@@ -1,4 +1,4 @@
-import { useSyncExternalStore, useEffect, useState } from 'react'
+import { useSyncExternalStore, useEffect, useLayoutEffect, useState, useRef, useId, Children, cloneElement, isValidElement } from 'react'
 import { engine } from './engine/engine.js'
 
 export function useEngine() {
@@ -59,6 +59,7 @@ const P = {
   info: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 16v-4M12 8h.01',
   check: 'M20 6 9 17l-5-5',
   eye: 'M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7ZM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
+  eyeOff: 'M9.88 9.88a3 3 0 1 0 4.24 4.24M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68M6.61 6.61A13.53 13.53 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61M2 2l20 20',
   github: 'M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.4 5.4 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4M9 18c-4.51 2-5-2-7-2',
   sparkle: 'M12 3l1.9 5.8L20 10l-6.1 1.2L12 17l-1.9-5.8L4 10l6.1-1.2z',
 }
@@ -109,20 +110,24 @@ export function Sparkline({ data, width = 120, height = 28, min = -100, max = -3
   )
 }
 
-export function Switch({ checked, onChange, label }) {
+/** Toggle. Give it an accessible name with `label` (text) or `labelledBy` (element id). */
+export function Switch({ checked, onChange, label, labelledBy }) {
   return (
     <label className="switch">
-      <input type="checkbox" checked={!!checked} onChange={(e) => onChange(e.target.checked)} aria-label={label} />
+      <input type="checkbox" role="switch" checked={!!checked} onChange={(e) => onChange(e.target.checked)}
+        aria-label={labelledBy ? undefined : label} aria-labelledby={labelledBy} />
       <span />
     </label>
   )
 }
 
-export function Seg({ value, options, onChange }) {
+/** Segmented control. An option may carry `aria` (its accessible name and tooltip) for icon-only layouts. */
+export function Seg({ value, options, onChange, label }) {
   return (
-    <div className="seg" role="radiogroup">
+    <div className="seg" role="radiogroup" aria-label={label}>
       {options.map((o) => (
-        <button key={o.value} role="radio" aria-checked={value === o.value} className={value === o.value ? 'on' : ''} onClick={() => onChange(o.value)}>
+        <button key={o.value} type="button" role="radio" aria-checked={value === o.value} className={value === o.value ? 'on' : ''} onClick={() => onChange(o.value)}
+          aria-label={o.aria} title={o.aria}>
           {o.icon && <Icon name={o.icon} size={15} />}{o.label}
         </button>
       ))}
@@ -130,19 +135,53 @@ export function Seg({ value, options, onChange }) {
   )
 }
 
+// Open dialogs, innermost last: only the topmost one reacts to Escape and traps Tab.
+const sheetStack = []
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
 export function Sheet({ title, onClose, children, actions, className = '' }) {
-  useEffect(() => {
-    const k = (e) => e.key === 'Escape' && onClose?.()
-    window.addEventListener('keydown', k)
-    return () => window.removeEventListener('keydown', k)
-  }, [onClose])
+  const ref = useRef(null)
+  const closeRef = useRef(onClose)
+  closeRef.current = onClose
+  const titleId = useId()
+  useLayoutEffect(() => {
+    const node = ref.current
+    const opener = document.activeElement
+    sheetStack.push(node)
+    node.focus({ preventScroll: true })
+    const onKey = (ev) => {
+      if (sheetStack[sheetStack.length - 1] !== node) return
+      if (ev.key === 'Escape') {
+        if (closeRef.current) { ev.preventDefault(); closeRef.current() }
+        return
+      }
+      if (ev.key !== 'Tab') return
+      const items = [...node.querySelectorAll(FOCUSABLE)].filter((el) => el.getClientRects().length)
+      if (!items.length) { ev.preventDefault(); node.focus(); return }
+      const first = items[0]
+      const last = items[items.length - 1]
+      const cur = document.activeElement
+      if (!node.contains(cur)) { ev.preventDefault(); (ev.shiftKey ? last : first).focus() }
+      else if (ev.shiftKey && (cur === first || cur === node)) { ev.preventDefault(); last.focus() }
+      else if (!ev.shiftKey && cur === last) { ev.preventDefault(); first.focus() }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      const i = sheetStack.lastIndexOf(node)
+      if (i >= 0) sheetStack.splice(i, 1)
+      const back = sheetStack[sheetStack.length - 1]
+      if (opener && opener.isConnected && typeof opener.focus === 'function') opener.focus({ preventScroll: true })
+      else if (back) back.focus({ preventScroll: true })
+    }
+  }, [])
   return (
     <div className="scrim" onClick={(e) => e.target === e.currentTarget && onClose?.()}>
-      <div className={'sheet ' + className} role="dialog" aria-modal="true">
+      <div ref={ref} className={'sheet ' + className} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
         <div className="sheet-head">
-          <div className="grow" style={{ fontWeight: 700, fontSize: 17 }}>{title}</div>
+          <div className="grow" id={titleId} style={{ fontWeight: 700, fontSize: 17, minWidth: 0 }}>{title}</div>
           {actions}
-          {onClose && <button className="btn sm icon ghost" onClick={onClose} aria-label="close"><Icon name="x" /></button>}
+          {onClose && <button className="btn sm icon ghost" onClick={onClose} aria-label={engine.t('close')} title={engine.t('close')}><Icon name="x" /></button>}
         </div>
         <div className="sheet-body">{children}</div>
       </div>
@@ -150,14 +189,19 @@ export function Sheet({ title, onClose, children, actions, className = '' }) {
   )
 }
 
+/** A settings row. A Switch placed directly inside is named by the row's title. */
 export function Setting({ title, hint, children }) {
+  const id = useId()
+  const kids = Children.map(children, (c) => (isValidElement(c) && c.type === Switch && !c.props.label && !c.props.labelledBy
+    ? cloneElement(c, typeof title === 'string' ? { label: title } : { labelledBy: id })
+    : c))
   return (
     <div className="setting">
       <div className="grow">
-        <div>{title}</div>
+        <div id={id}>{title}</div>
         {hint && <div className="small muted">{hint}</div>}
       </div>
-      {children}
+      {kids}
     </div>
   )
 }
@@ -167,7 +211,7 @@ export function ago(t, ms, now = Date.now()) {
   if (s < 2) return t('justNow')
   if (s < 120) return t('ago', { n: s })
   const m = Math.round(s / 60)
-  return t.lang === 'ar' ? `قبل ${m} د` : `${m}m ago`
+  return t('agoMin', { n: m })
 }
 
 export function fmtDur(ms, t) {
@@ -191,6 +235,9 @@ export async function copyText(text) {
 }
 
 /** Two-tap confirmation: first tap arms the button, second tap within 4 s runs it. Works where confirm() is blocked. */
+/** Recompute heavy derived data at most once per `ms` (plus whenever `deps` change). */
+export const tickOf = (ms, now = Date.now()) => Math.floor(now / ms)
+
 export function ConfirmButton({ onConfirm, children, confirmLabel, className = 'btn danger', ...rest }) {
   const [armed, setArmed] = useState(false)
   useEffect(() => {
@@ -199,7 +246,7 @@ export function ConfirmButton({ onConfirm, children, confirmLabel, className = '
     return () => clearTimeout(id)
   }, [armed])
   return (
-    <button {...rest} className={className + (armed ? ' solid' : '')} onClick={() => (armed ? (setArmed(false), onConfirm()) : setArmed(true))}>
+    <button {...rest} aria-label={armed ? confirmLabel : rest['aria-label']} className={className + (armed ? ' solid' : '')} onClick={() => (armed ? (setArmed(false), onConfirm()) : setArmed(true))}>
       {armed ? confirmLabel : children}
     </button>
   )

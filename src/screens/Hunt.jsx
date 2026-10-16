@@ -44,8 +44,8 @@ export function Hunt() {
             <button key={c.key} className="radio" onClick={() => { e.huntKey = c.key; e.emit() }}>
               <Glyph r={c} color={radioColor(e, c)} />
               <div style={{ minWidth: 0 }}>
-                <div className="radio-name ellipsis">{e.displayName(c) || <span className="muted">{c.hidden ? t('hidden') : t('unknown')}</span>}</div>
-                <div className="radio-meta"><span className="mono faint">{maskMac(c.mac, e.settings.privacy)}</span>{c.fleetIds[0] && <span className="tag">{e.fleetById(c.fleetIds[0])?.name}</span>}</div>
+                <div className="radio-name ellipsis" dir="auto">{e.displayName(c) || <span className="muted">{c.hidden ? t('hidden') : t('unknown')}</span>}</div>
+                <div className="radio-meta"><span className="mono faint">{maskMac(c.mac, e.settings.privacy)}</span>{c.fleetIds[0] && <span className="tag"><bdi>{e.fleetById(c.fleetIds[0])?.name}</bdi></span>}</div>
               </div>
               <div className="rssi"><b className="ltr">{c.rssi}</b></div>
             </button>
@@ -68,7 +68,7 @@ export function Hunt() {
         <div className="row">
           <Glyph r={r} color={radioColor(e, r)} />
           <div className="grow" style={{ minWidth: 0 }}>
-            <div className="ellipsis" style={{ fontWeight: 700 }}>{e.displayName(r) || (r.hidden ? t('hidden') : t('unknown'))}</div>
+            <div className="ellipsis" dir="auto" style={{ fontWeight: 700 }}>{e.displayName(r) || (r.hidden ? t('hidden') : t('unknown'))}</div>
             <div className="small muted mono">{maskMac(r.mac, e.settings.privacy)}</div>
           </div>
           <button className="btn sm" onClick={() => { e.huntKey = null; e.emit() }}><Icon name="x" size={14} />{t('close')}</button>
@@ -94,7 +94,7 @@ export function Hunt() {
       <div className="card">
         <div className="setting">
           <div className="grow">{t('huntTone')}</div>
-          <Switch checked={tone} onChange={setTone} />
+          <Switch checked={tone} onChange={setTone} label={t('huntTone')} />
         </div>
       </div>
       {!e.running && <button className="btn primary big" onClick={() => e.start()}><Icon name="play" />{t('start')}</button>}

@@ -12,31 +12,32 @@ export function Settings() {
   const t = e.t
   const s = e.settings
   const [canInstall, setCanInstall] = useState(!!deferredInstall)
+  const [showBridge, setShowBridge] = useState(false)
   useEffect(() => {
     const h = () => setCanInstall(true)
     window.addEventListener('beforeinstallprompt', h)
     return () => window.removeEventListener('beforeinstallprompt', h)
   }, [])
   const caps = [
-    ['Web Bluetooth (LE scan)', !!navigator.bluetooth?.requestLEScan],
-    ['Web Bluetooth (device picker)', !!navigator.bluetooth],
-    ['Geolocation', 'geolocation' in navigator],
-    ['Notifications', typeof Notification !== 'undefined'],
-    ['Vibration', 'vibrate' in navigator],
-    ['Speech synthesis', 'speechSynthesis' in window],
-    ['Service worker (offline)', 'serviceWorker' in navigator],
-    ['IndexedDB', 'indexedDB' in window],
-    ['Wi-Fi scanning', false],
+    ['capBleScan', !!navigator.bluetooth?.requestLEScan],
+    ['capBlePicker', !!navigator.bluetooth],
+    ['capGeo', 'geolocation' in navigator],
+    ['capNotify', typeof Notification !== 'undefined'],
+    ['capVibrate', 'vibrate' in navigator],
+    ['capSpeech', 'speechSynthesis' in window],
+    ['capSw', 'serviceWorker' in navigator],
+    ['capIdb', 'indexedDB' in window],
+    ['capWifi', false],
   ]
   return (
     <div className="stack">
       <div className="card">
         <Setting title={<span className="row"><Icon name="globe" />{t('language')}</span>}>
-          <Seg value={s.lang} onChange={(v) => e.set({ lang: v })} options={[{ value: 'ar', label: 'العربية' }, { value: 'en', label: 'English' }]} />
+          <Seg value={s.lang} label={t('language')} onChange={(v) => e.set({ lang: v })} options={[{ value: 'ar', label: 'العربية' }, { value: 'en', label: 'English' }]} />
         </Setting>
         <div className="setting" style={{ flexWrap: 'wrap' }}>
           <div className="row" style={{ flex: '1 0 100%' }}><Icon name="sun" />{t('theme')}</div>
-          <Seg value={s.theme} onChange={(v) => e.set({ theme: v })} options={[
+          <Seg value={s.theme} label={t('theme')} onChange={(v) => e.set({ theme: v })} options={[
             { value: 'system', label: t('themeSystem') }, { value: 'light', icon: 'sun', label: t('themeLight') },
             { value: 'dark', icon: 'moon', label: t('themeDark') }, { value: 'night', label: t('themeNight') },
           ]} />
@@ -57,8 +58,8 @@ export function Settings() {
           e.set({ notify: v })
         }} /></Setting>
         <Setting title={t('alertCooldown')}>
-          <select className="input" style={{ width: 'auto' }} value={s.cooldown} onChange={(ev) => e.set({ cooldown: Number(ev.target.value) })}>
-            {[15, 30, 60, 300, 900].map((n) => <option key={n} value={n}>{n >= 60 ? `${n / 60} ${t.lang === 'ar' ? 'د' : 'min'}` : `${n} ${t.lang === 'ar' ? 'ث' : 's'}`}</option>)}
+          <select className="input" style={{ width: 'auto' }} aria-label={t('alertCooldown')} value={s.cooldown} onChange={(ev) => e.set({ cooldown: Number(ev.target.value) })}>
+            {[15, 30, 60, 300, 900].map((n) => <option key={n} value={n}>{n >= 60 ? t('nMin', { n: n / 60 }) : t('nSec', { n })}</option>)}
           </select>
         </Setting>
         <Setting title={t('floodDetect')}><Switch checked={s.floodDetect} onChange={(v) => e.set({ floodDetect: v })} /></Setting>
@@ -81,7 +82,7 @@ export function Settings() {
             <div>{t('watchedNets')}</div>
             <div className="small muted">{t('watchedNetsHint')}</div>
           </div>
-          <input className="input grow" name="net" placeholder={t('netName')} style={{ minWidth: 0, minHeight: 38 }} />
+          <input className="input grow" name="net" dir="auto" placeholder={t('netName')} aria-label={t('netName')} style={{ minWidth: 0, minHeight: 38 }} />
           <button className="btn sm" type="submit"><Icon name="plus" size={14} />{t('addNet')}</button>
         </form>
         {(s.watchedNets || []).length > 0 && (
@@ -98,11 +99,11 @@ export function Settings() {
         <Setting title={t('tgEnabled')} hint={t('tgHint')}><Switch checked={s.tgEnabled} onChange={(v) => e.set({ tgEnabled: v })} /></Setting>
         <div className="setting" style={{ flexWrap: 'wrap' }}>
           <div style={{ flex: '1 0 100%' }}>{t('tgToken')}</div>
-          <input className="input" type="password" dir="ltr" value={s.tgToken || ''} placeholder="123456789:AA…" autoComplete="off" onChange={(ev) => e.set({ tgToken: ev.target.value.trim() })} />
+          <input className="input" type="password" dir="ltr" aria-label={t('tgToken')} value={s.tgToken || ''} placeholder="123456789:AA…" autoComplete="off" onChange={(ev) => e.set({ tgToken: ev.target.value.trim() })} />
         </div>
         <div className="setting" style={{ flexWrap: 'wrap' }}>
           <div style={{ flex: '1 0 100%' }}>{t('tgChatId')}</div>
-          <input className="input" dir="ltr" value={s.tgChatId || ''} placeholder="123456789" autoComplete="off" onChange={(ev) => e.set({ tgChatId: ev.target.value.trim() })} />
+          <input className="input" dir="ltr" aria-label={t('tgChatId')} value={s.tgChatId || ''} placeholder="123456789" autoComplete="off" onChange={(ev) => e.set({ tgChatId: ev.target.value.trim() })} />
         </div>
         <div className="setting" style={{ justifyContent: 'flex-end' }}>
           <button className="btn sm" onClick={async () => {
@@ -118,21 +119,27 @@ export function Settings() {
         <Setting title={t('location')} hint={t('locationHint')}><Switch checked={s.location} onChange={(v) => e.set({ location: v })} /></Setting>
         <div className="setting" style={{ flexWrap: 'wrap' }}>
           <div style={{ flex: '1 0 100%' }}>{t('scanIntensity')}</div>
-          <Seg value={s.density} onChange={(v) => e.set({ density: v })} options={[{ value: 'SAVER', label: t('saver') }, { value: 'BALANCED', label: t('balanced') }, { value: 'PERFORMANCE', label: t('performance') }]} />
+          <Seg value={s.density} label={t('scanIntensity')} onChange={(v) => e.set({ density: v })} options={[{ value: 'SAVER', label: t('saver') }, { value: 'BALANCED', label: t('balanced') }, { value: 'PERFORMANCE', label: t('performance') }]} />
         </div>
         <div className="setting" style={{ flexWrap: 'wrap' }}>
           <div style={{ flex: '1 0 100%' }}>
             <div>{t('bridgeUrl')}</div>
             <div className="small muted">{t('bridgeUrlHint')}</div>
           </div>
-          <input className="input" type="password" dir="ltr" value={s.bridgeUrl || ''} placeholder="ws://127.0.0.1:8765/?token=…" autoComplete="off" onChange={(ev) => e.set({ bridgeUrl: ev.target.value.trim() })} />
+          <div className="row" style={{ flex: '1 0 100%', minWidth: 0 }}>
+            <input className="input grow" type={showBridge ? 'text' : 'password'} dir="ltr" aria-label={t('bridgeUrl')} value={s.bridgeUrl || ''} placeholder="ws://127.0.0.1:8765/?token=…" autoComplete="off" spellCheck={false} onChange={(ev) => e.set({ bridgeUrl: ev.target.value.trim() })} />
+            <button type="button" className="btn icon" aria-pressed={showBridge} aria-label={showBridge ? t('hideSecret') : t('showSecret')} title={showBridge ? t('hideSecret') : t('showSecret')} onClick={() => setShowBridge(!showBridge)}>
+              <Icon name={showBridge ? 'eyeOff' : 'eye'} size={16} />
+            </button>
+          </div>
           {e.bridgeState && <div className="small" style={{ flex: '1 0 100%' }}>
             <span className={'tag ' + (e.bridgeState === 'open' ? 'ok' : e.bridgeState === 'denied' || e.bridgeState === 'error' ? 'attn' : '')}>{t('bridge_' + e.bridgeState)}</span>
             {e.bridgeInfo && <span className="faint"> · {e.bridgeInfo.platform} · Wi-Fi {e.bridgeInfo.caps.wifi ? '✓' : '✗'} · BLE {e.bridgeInfo.caps.ble ? '✓' : '✗'}</span>}
           </div>}
         </div>
         <Setting title={t('sourceReplay')} hint={t('sourceReplayHint')}>
-          <button className="btn sm" onClick={async () => {
+          <button className="btn sm" disabled={e.running} onClick={async () => {
+            if (e.running) return
             const f = await pickFile('.csv,.jsonl,.json,.txt')
             if (!f) return
             try { e.loadReplay(f.text); e.set({ source: 'replay' }) } catch (err) { e.toast(t('importFailed', { e: err.message }), 'warn') }
@@ -147,7 +154,7 @@ export function Settings() {
             <div>{t('aiKey')}</div>
             <div className="small muted">{t('aiKeyHint')}</div>
           </div>
-          <input className="input" type="password" dir="ltr" value={s.aiKey || ''} placeholder="sk-ant-…" autoComplete="off" onChange={(ev) => e.set({ aiKey: ev.target.value.trim() })} />
+          <input className="input" type="password" dir="ltr" aria-label={t('aiKey')} value={s.aiKey || ''} placeholder="sk-ant-…" autoComplete="off" onChange={(ev) => e.set({ aiKey: ev.target.value.trim() })} />
         </div>
       </div>
 
@@ -179,7 +186,7 @@ export function Settings() {
       <div className="section-title">{t('diagnostics')}</div>
       <div className="card card-pad">
         <dl className="kv">
-          {caps.map(([k, v]) => <Fragment key={k}><dt>{k}</dt><dd><span className={'tag ' + (v ? 'ok' : 'warn')}>{v ? t('supported') : t('notSupported')}</span></dd></Fragment>)}
+          {caps.map(([k, v]) => <Fragment key={k}><dt>{t(k)}</dt><dd><span className={'tag ' + (v ? 'ok' : 'warn')}>{v ? t('supported') : t('notSupported')}</span></dd></Fragment>)}
           <dt>{t('catalogVersion')}</dt><dd>#{e.catalogVersion} · {e.fleets.length}</dd>
           <dt>{t('radios')}</dt><dd>{e.radios.size}</dd>
           <dt>{t('log')}</dt><dd>{e.log.length}</dd>

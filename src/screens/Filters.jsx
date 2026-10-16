@@ -18,15 +18,15 @@ export function Filters({ onClose }) {
       <div className="stack">
         <div className="card">
           <Setting title={t('fRadio')}>
-            <Seg value={f.radio} onChange={(v) => e.setFilters({ radio: v })} options={[{ value: 'BOTH', label: t('fBoth') }, { value: 'WIFI', label: 'Wi-Fi' }, { value: 'BLE', label: 'BLE' }]} />
+            <Seg value={f.radio} label={t('fRadio')} onChange={(v) => e.setFilters({ radio: v })} options={[{ value: 'BOTH', label: t('fBoth') }, { value: 'WIFI', label: 'Wi-Fi' }, { value: 'BLE', label: 'BLE' }]} />
           </Setting>
           <div className="setting" style={{ display: 'block' }}>
             <div className="row"><span className="grow">{t('fMinRssi')}</span><b className="ltr">{f.minRssi} dBm</b></div>
-            <input type="range" min="-100" max="-40" step="1" value={f.minRssi} onChange={(ev) => e.setFilters({ minRssi: Number(ev.target.value) })} style={{ direction: 'ltr' }} />
+            <input type="range" min="-100" max="-40" step="1" aria-label={t('fMinRssi')} aria-valuetext={`${f.minRssi} dBm`} value={f.minRssi} onChange={(ev) => e.setFilters({ minRssi: Number(ev.target.value) })} style={{ direction: 'ltr' }} />
           </div>
           <div className="setting" style={{ display: 'block' }}>
-            <div className="row"><span className="grow">{t('fMaxAge')}</span><b>{f.maxAge} {t('seconds')}</b></div>
-            <input type="range" min="10" max="600" step="10" value={f.maxAge} onChange={(ev) => e.setFilters({ maxAge: Number(ev.target.value) })} style={{ direction: 'ltr' }} />
+            <div className="row"><span className="grow">{t('fMaxAge')}</span><b className="nowrap">{f.maxAge} {t('seconds')}</b></div>
+            <input type="range" min="10" max="600" step="10" aria-label={t('fMaxAge')} aria-valuetext={`${f.maxAge} ${t('seconds')}`} value={f.maxAge} onChange={(ev) => e.setFilters({ maxAge: Number(ev.target.value) })} style={{ direction: 'ltr' }} />
           </div>
           <Setting title={t('fOnlyMatched')}><Switch checked={f.onlyMatched} onChange={(v) => e.setFilters({ onlyMatched: v })} /></Setting>
           <Setting title={t('fOnlyAttention')}><Switch checked={f.onlyAttention} onChange={(v) => e.setFilters({ onlyAttention: v })} /></Setting>
@@ -40,7 +40,7 @@ export function Filters({ onClose }) {
           </div>
           <div className="row wrap">
             {CLASSES.map((c) => (
-              <button key={c} className={'chip' + (f.classes.includes(c) ? ' on' : '')} onClick={() => toggleClass(c)}>
+              <button key={c} className={'chip' + (f.classes.includes(c) ? ' on' : '')} aria-pressed={f.classes.includes(c)} onClick={() => toggleClass(c)}>
                 <Icon name={CLASS_ICON[c]} size={14} />{t.cls(c)}
               </button>
             ))}
@@ -58,7 +58,7 @@ export function Filters({ onClose }) {
             ))}
           </div>
           <div className="row">
-            <input className="input grow" placeholder={t('presetName')} value={presetName} onChange={(ev) => setPresetName(ev.target.value)} />
+            <input className="input grow" placeholder={t('presetName')} aria-label={t('presetName')} value={presetName} onChange={(ev) => setPresetName(ev.target.value)} />
             <button className="btn" disabled={!presetName.trim()} onClick={() => { e.set({ presets: [...presets, { name: presetName.trim(), filters: { ...f, q: '' } }] }); setPresetName('') }}>{t('save')}</button>
           </div>
         </div>

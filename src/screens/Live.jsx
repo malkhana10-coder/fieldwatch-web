@@ -1,16 +1,21 @@
-import { useState, useMemo, useEffect, useRef } from 'react'
+import { useState, useMemo } from 'react'
 import { useEngine, Icon, Glyph, Bars, Sparkline, Seg, ago, CLASS_ICON } from '../ui.jsx'
 import { PALETTE } from '../engine/catalog.js'
 import { maskMac } from '../engine/geo.js'
 import { CLASSES } from '../i18n.js'
 import { Filters } from './Filters.jsx'
-import { useLeaflet } from '../leaflet.jsx'
+import { GeoMap, textNode, mapColors, currentTheme, NIGHT_SHADES } from '../leaflet.jsx'
 import { trackerState } from '../engine/intel.js'
+
+/** Signature colour for a radio; red shades only in the night theme. */
+export function fleetColor(colorIndex, theme = currentTheme()) {
+  return theme === 'night' ? NIGHT_SHADES[colorIndex % NIGHT_SHADES.length] : PALETTE[colorIndex % PALETTE.length]
+}
 
 export function radioColor(engine, r) {
   if (r.attention) return 'var(--danger)'
   const f = r.fleetIds[0] && engine.fleetById(r.fleetIds[0])
-  return f ? PALETTE[f.colorIndex % PALETTE.length] : null
+  return f ? fleetColor(f.colorIndex) : null
 }
 
 export function SourcePicker() {
@@ -40,22 +45,22 @@ function RadioRow({ r, onOpen, now }) {
     <button className={`radio${r.attention ? ' attn' : ''}${stale ? ' stale' : ''}`} onClick={() => onOpen(r.key)}>
       <Glyph r={r} color={radioColor(e, r)} />
       <div style={{ minWidth: 0 }}>
-        <div className="row" style={{ gap: 6 }}>
-          <span className={'radio-name ellipsis' + (!e.displayName(r) ? ' muted' : '')}>{name}</span>
+        <div className="row wrap" style={{ gap: 6 }}>
+          <span className={'radio-name ellipsis' + (!e.displayName(r) ? ' muted' : '')} dir="auto">{name}</span>
           {named?.mine && <span className="tag ok">{t('mine')}</span>}
           {e.watchedNetFor(r) && <span className="tag info">{t('watchedTag')}</span>}
           {e.coTravel(r) && !named?.mine && <span className="tag warn">{t('movingWithYou')}</span>}
           {trackerState(r, now)?.separated && <span className="tag attn">{t('tagSeparated')}</span>}
           {r.prevMacs?.length > 0 && <span className="tag" title={t('rotatedHint')}>↻ {r.prevMacs.length}</span>}
-          {r.drone?.height != null && <span className="tag info ltr">{r.drone.height} m</span>}
+          {r.drone?.height != null && <span className="tag info"><span className="nowrap">{r.drone.height} {t('m')}</span></span>}
         </div>
         <div className="radio-meta">
           <span className={'tag ' + (r.kind === 'WIFI' ? 'wifi' : 'ble')}>{r.kind === 'WIFI' ? 'Wi-Fi' : 'BLE'}</span>
-          {fleets.slice(0, 2).map((f) => <span key={f.id} className={'tag' + (f.attentionNote ? ' attn' : '')}>{f.name}</span>)}
-          {!fleets.length && (r.vendor || r.company) && <span className="ellipsis" style={{ maxWidth: 180 }}>{r.vendor || r.company}</span>}
+          {fleets.slice(0, 2).map((f) => <span key={f.id} className={'tag' + (f.attentionNote ? ' attn' : '')}><bdi>{f.name}</bdi></span>)}
+          {!fleets.length && (r.vendor || r.company) && <span className="ellipsis" dir="auto" style={{ maxWidth: 180 }}>{r.vendor || r.company}</span>}
           <span className="mono faint">{maskMac(r.mac, privacy)}</span>
-          {r.kind === 'WIFI' && r.channel ? <span className="faint">ch {r.channel}</span> : null}
-          {r.decoded?.[0] && <span className="faint ellipsis" style={{ maxWidth: 200 }}>{r.decoded[0].label}: {r.decoded[0].value}</span>}
+          {r.kind === 'WIFI' && r.channel ? <span className="faint nowrap">{t('chN', { n: r.channel })}</span> : null}
+          {r.decoded?.[0] && <span className="faint ellipsis" dir="auto" style={{ maxWidth: 200 }}>{r.decoded[0].label}: {r.decoded[0].value}</span>}
         </div>
       </div>
       <div className="rssi">
@@ -79,6 +84,7 @@ function hashAngle(key) {
 function Radar({ radios, onOpen }) {
   const e = useEngine()
   const t = e.t
+  const privacy = e.settings.privacy
   const size = 400
   const c = size / 2
   const rings = [-50, -65, -80, -95]
@@ -86,7 +92,7 @@ function Radar({ radios, onOpen }) {
   return (
     <div className="radar-wrap">
       <div className="radar-box card card-pad">
-        <svg className="radar" viewBox={`0 0 ${size} ${size}`} style={{ direction: 'ltr' }}>
+        <svg className="radar" viewBox={`0 0 ${size} ${size}`} style={{ direction: 'ltr' }} role="group" aria-label={t('radarList')}>
           <defs>
             <linearGradient id="sweep" x1="0" y1="0" x2="1" y2="0">
               <stop offset="0" stopColor="var(--accent)" stopOpacity="0" />
@@ -112,11 +118,13 @@ function Radar({ radios, onOpen }) {
             const col = radioColor(e, r) || (r.kind === 'WIFI' ? 'var(--wifi)' : 'var(--ble)')
             const x = c + Math.cos(a) * d
             const y = c + Math.sin(a) * d
+            const label = (e.displayName(r) || maskMac(r.mac, privacy)) + ' ' + r.rssi + ' dBm'
             return (
-              <g key={r.key} onClick={() => onOpen(r.key)} style={{ cursor: 'pointer' }}>
+              <g key={r.key} className="radar-dot" onClick={() => onOpen(r.key)} style={{ cursor: 'pointer' }} role="button" tabIndex={0} aria-label={label}
+                onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); onOpen(r.key) } }}>
                 {r.attention && <circle cx={x} cy={y} r={11} fill="none" stroke="var(--danger)" strokeWidth="1.5" opacity=".7" />}
                 <circle cx={x} cy={y} r={r.fleetIds.length ? 6 : 4} fill={col} opacity={r.fleetIds.length ? 1 : 0.6}>
-                  <title>{(e.displayName(r) || r.mac) + ' ' + r.rssi + ' dBm'}</title>
+                  <title>{label}</title>
                 </circle>
               </g>
             )
@@ -124,7 +132,7 @@ function Radar({ radios, onOpen }) {
           <circle cx={c} cy={c} r={4} fill="var(--text)" />
         </svg>
         <div className="tiny faint" style={{ marginTop: 6, textAlign: 'center' }}>
-          {t.lang === 'ar' ? 'المسافة من المركز = قوة الإشارة، وليست اتجاهاً أو مسافة حقيقية.' : 'Distance from center = signal strength, not bearing or true distance.'}
+          {t('radarNote')}
         </div>
       </div>
       <div className="radio-list">
@@ -149,18 +157,18 @@ function ByClass({ radios, onOpen, now }) {
   }, [radios])
   const [open, setOpen] = useState({})
   return groups.map(([k, list]) => {
-    const label = k === '_WIFI' ? `Wi-Fi · ${t.lang === 'ar' ? 'بدون بصمة' : 'unmatched'}` : k === '_BLE' ? `BLE · ${t.lang === 'ar' ? 'بدون بصمة' : 'unmatched'}` : t.cls(k)
+    const label = k === '_WIFI' ? `Wi-Fi · ${t('unmatched')}` : k === '_BLE' ? `BLE · ${t('unmatched')}` : t.cls(k)
     const icon = k === '_WIFI' ? 'wifi' : k === '_BLE' ? 'ble' : CLASS_ICON[k]
     const collapsed = open[k] ?? k.startsWith('_')
     return (
       <div className="class-group" key={k}>
-        <button className="class-group-head btn ghost" style={{ width: '100%', justifyContent: 'flex-start', padding: '4px 2px' }} onClick={() => setOpen({ ...open, [k]: !collapsed })}>
+        <button className="class-group-head btn ghost" style={{ width: '100%', justifyContent: 'flex-start', padding: '4px 2px' }} aria-expanded={!collapsed} onClick={() => setOpen({ ...open, [k]: !collapsed })}>
           <Icon name={icon} />
           <span>{label}</span>
           <span className="tag">{list.length}</span>
           {list.some((r) => r.attention) && <span className="tag attn"><Icon name="alert" size={12} /></span>}
           <span className="spacer" />
-          <span className="faint">{collapsed ? '▸' : '▾'}</span>
+          <span className="faint" aria-hidden="true">{collapsed ? (t.dir === 'rtl' ? '◂' : '▸') : '▾'}</span>
         </button>
         {!collapsed && <div className="radio-list">{list.map((r) => <RadioRow key={r.key} r={r} onOpen={onOpen} now={now} />)}</div>}
       </div>
@@ -179,8 +187,8 @@ function Timeline({ radios, onOpen, now }) {
         return (
           <button key={r.key} className="sig" style={{ width: '100%', background: 'none', border: 0, borderBlockStart: '1px solid var(--line)', textAlign: 'start' }} onClick={() => onOpen(r.key)}>
             <div className="grow" style={{ minWidth: 120, maxWidth: 260 }}>
-              <div className="ellipsis" style={{ fontWeight: 600 }}>{e.displayName(r) || <span className="muted">{r.hidden ? t('hidden') : t('unknown')}</span>}</div>
-              <div className="tiny faint ellipsis">{r.fleetIds.map((id) => e.fleetById(id)?.name).join(' · ') || r.vendor || r.company || maskMac(r.mac, e.settings.privacy)}</div>
+              <div className="ellipsis" dir="auto" style={{ fontWeight: 600 }}>{e.displayName(r) || <span className="muted">{r.hidden ? t('hidden') : t('unknown')}</span>}</div>
+              <div className="tiny faint ellipsis" dir="auto">{r.fleetIds.map((id) => e.fleetById(id)?.name).join(' · ') || r.vendor || r.company || maskMac(r.mac, e.settings.privacy)}</div>
             </div>
             <div className="grow" style={{ direction: 'ltr' }}>
               <svg width="100%" height="30" viewBox="0 0 300 30" preserveAspectRatio="none">
@@ -195,87 +203,55 @@ function Timeline({ radios, onOpen, now }) {
           </button>
         )
       })}
-      <div className="tiny faint" style={{ padding: '6px 12px', display: 'flex', justifyContent: 'space-between' }}><span>−3:00</span><span>{t('justNow')}</span></div>
+      <div className="tiny faint" style={{ padding: '6px 12px', display: 'flex', justifyContent: 'space-between', direction: 'ltr' }}><span>−3:00</span><span>{t('justNow')}</span></div>
     </div>
   )
 }
 
 /** Real hex colour for Leaflet (CSS vars don't work there). */
-function mapHex(e, r) {
-  if (r.attention) return '#c62839'
+function mapHex(e, r, C) {
+  if (r.attention) return C.attn
   const f = r.fleetIds[0] && e.fleetById(r.fleetIds[0])
-  if (f) return PALETTE[f.colorIndex % PALETTE.length]
-  return r.kind === 'WIFI' ? '#1a6fb5' : '#7a4fd6'
+  if (f) return fleetColor(f.colorIndex, C.night ? 'night' : 'light')
+  return r.kind === 'WIFI' ? C.wifi : C.ble
 }
 
 function MapView({ radios, onOpen }) {
   const e = useEngine()
   const t = e.t
-  const mapRef = useRef(null)
-  const map = useRef(null)
-  const layer = useRef(null)
-  const fitted = useRef(false)
-
-  const L = useLeaflet()
-
-  const hasData = radios.some((r) => r.positions.length) || (e.activeSit()?.path?.length >= 2) || !!e.pos
-
-  // init the OpenStreetMap once Leaflet is loaded and the map container exists
-  useEffect(() => {
-    if (!L || !hasData || !mapRef.current || map.current) return
-    const m = L.map(mapRef.current, { zoomControl: true })
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19, attribution: '&copy; OpenStreetMap contributors',
-    }).addTo(m)
-    layer.current = L.layerGroup().addTo(m)
-    map.current = m
-    return () => { try { m.remove() } catch { /* ignore */ } map.current = null; layer.current = null; fitted.current = false }
-  }, [L, hasData])
-
-  // redraw path + markers each render; auto-fit only the first time
-  useEffect(() => {
-    if (!map.current || !layer.current) return
-    const lg = layer.current
-    lg.clearLayers()
-    const sit = e.activeSit()
-    const path = sit ? [...sit.path] : []
-    const marks = []
-    for (const r of radios) {
-      if (r.positions.length) {
-        const p = r.positions[r.positions.length - 1]
-        marks.push({ lat: p.lat, lon: p.lon, r })
-      }
-    }
-    if (path.length > 1) {
-      L.polyline(path.map((p) => [p.lat, p.lon]), { color: '#0a8f5a', weight: 3, opacity: 0.8 }).addTo(lg)
-    }
-    for (const p of marks) {
-      const col = mapHex(e, p.r)
-      const mk = L.circleMarker([p.lat, p.lon], {
-        radius: p.r.attention ? 8 : 5, color: p.r.attention ? '#c62839' : col, weight: 1.5,
-        fillColor: p.r.attention ? '#c62839' : col, fillOpacity: 0.9,
-      })
-      mk.bindPopup((e.displayName(p.r) || p.r.mac) + ' @ ' + p.r.rssi + ' dBm')
-      mk.on('click', () => onOpen(p.r.key))
-      mk.addTo(lg)
-    }
-    const you = e.pos || path[path.length - 1]
-    if (you) {
-      L.circleMarker([you.lat, you.lon], { radius: 7, color: '#0f1a17', weight: 2, fillColor: '#ffffff', fillOpacity: 1 })
-        .addTo(lg).bindPopup(t('mapYou'))
-    }
-    const all = [...path, ...marks]
-    if (!fitted.current) {
-      if (all.length >= 2) map.current.fitBounds(L.latLngBounds(all.map((p) => [p.lat, p.lon])), { padding: [36, 36] })
-      else if (you) map.current.setView([you.lat, you.lon], 15)
-      if (all.length >= 2 || you) fitted.current = true
-    }
-  })
+  const privacy = e.settings.privacy
+  const sit = e.activeSit()
+  const hasData = radios.some((r) => r.positions.length) || (sit?.path?.length >= 2) || !!e.pos
+  const placed = radios.filter((r) => r.positions.length)
 
   return (
     <div className="card">
       {hasData
-        ? <div ref={mapRef} style={{ height: '52vh', minHeight: 340, borderRadius: 'var(--radius)' }} />
+        ? <GeoMap height="52vh" minHeight={340} fitKey="live" label={t('mapLabel')} keys={placed.map((r) => r.key).join(',') + '|' + privacy} draw={(L, lg) => {
+          const C = mapColors()
+          const path = sit ? [...sit.path] : []
+          const pts = []
+          if (path.length > 1) {
+            L.polyline(path.map((p) => [p.lat, p.lon]), { color: C.path, weight: 3, opacity: 0.8 }).addTo(lg)
+            for (const p of path) pts.push([p.lat, p.lon])
+          }
+          for (const r of placed) {
+            const p = r.positions[r.positions.length - 1]
+            const col = mapHex(e, r, C)
+            const mk = L.circleMarker([p.lat, p.lon], { radius: r.attention ? 8 : 5, color: col, weight: 1.5, fillColor: col, fillOpacity: 0.9 })
+            mk.bindPopup(textNode((e.displayName(r) || maskMac(r.mac, privacy)) + ' @ ' + r.rssi + ' dBm'))
+            mk.on('click', () => onOpen(r.key))
+            mk.addTo(lg)
+            pts.push([p.lat, p.lon])
+          }
+          const you = e.pos || path[path.length - 1]
+          if (you) {
+            L.circleMarker([you.lat, you.lon], { radius: 7, color: C.youStroke, weight: 2, fillColor: C.youFill, fillOpacity: 1 })
+              .addTo(lg).bindPopup(textNode(t('mapYou')))
+            pts.push([you.lat, you.lon])
+          }
+          return pts
+        }} />
         : <div className="empty"><Icon name="pin" size={40} /><div>{t('mapNoGps')}</div></div>}
       <div className="tiny faint" style={{ padding: '8px 12px' }}>{t('mapHint')}</div>
     </div>
@@ -300,24 +276,24 @@ export function Live({ onOpen }) {
           : <button className="btn primary" onClick={() => e.start()} disabled={!e.ready}><Icon name="play" size={15} />{t('start')}</button>}
         <SourcePicker />
         <span className="spacer" />
-        <Seg value={view} onChange={(v) => e.set({ view: v })} options={[
-          { value: 'LIST', icon: 'list', label: <span className="hide-sm">{t('viewList')}</span> },
-          { value: 'RADAR', icon: 'radar', label: <span className="hide-sm">{t('viewRadar')}</span> },
-          { value: 'CLASS', icon: 'grid', label: <span className="hide-sm">{t('viewClass')}</span> },
-          { value: 'TIMELINE', icon: 'chart', label: <span className="hide-sm">{t('viewTimeline')}</span> },
-          { value: 'MAP', icon: 'pin', label: <span className="hide-sm">{t('viewMap')}</span> },
+        <Seg value={view} label={t('view')} onChange={(v) => e.set({ view: v })} options={[
+          { value: 'LIST', icon: 'list', aria: t('viewList'), label: <span className="sr-only-sm">{t('viewList')}</span> },
+          { value: 'RADAR', icon: 'radar', aria: t('viewRadar'), label: <span className="sr-only-sm">{t('viewRadar')}</span> },
+          { value: 'CLASS', icon: 'grid', aria: t('viewClass'), label: <span className="sr-only-sm">{t('viewClass')}</span> },
+          { value: 'TIMELINE', icon: 'chart', aria: t('viewTimeline'), label: <span className="sr-only-sm">{t('viewTimeline')}</span> },
+          { value: 'MAP', icon: 'pin', aria: t('viewMap'), label: <span className="sr-only-sm">{t('viewMap')}</span> },
         ]} />
       </div>
       <div className="stats">
         <div className="stat"><b>{all.length}</b><span>{t('radios')}</span></div>
         <div className="stat"><b>{all.filter((r) => r.fleetIds.length).length}</b><span>{t('matched')}</span></div>
         <div className="stat attn"><b>{all.filter((r) => r.attention).length}</b><span>{t('attention')}</span></div>
-        <div className="stat"><b><span style={{ color: 'var(--wifi)' }}>{all.filter((r) => r.kind === 'WIFI').length}</span><span className="faint"> / </span><span style={{ color: 'var(--ble)' }}>{all.filter((r) => r.kind === 'BLE').length}</span></b><span>Wi-Fi / BLE</span></div>
+        <div className="stat"><b><span className="ltr"><span style={{ color: 'var(--wifi)' }}>{all.filter((r) => r.kind === 'WIFI').length}</span><span className="faint"> / </span><span style={{ color: 'var(--ble)' }}>{all.filter((r) => r.kind === 'BLE').length}</span></span></b><span dir="ltr" className="ltr">{t('wifiBle')}</span></div>
       </div>
       <div className="controls">
         <div className="search grow" style={{ minWidth: 200 }}>
           <Icon name="search" size={16} />
-          <input className="input" value={f.q} placeholder={t('search')} onChange={(ev) => e.setFilters({ q: ev.target.value })} />
+          <input className="input" type="search" value={f.q} placeholder={t('search')} aria-label={t('search')} onChange={(ev) => e.setFilters({ q: ev.target.value })} />
         </div>
         <select className="input" style={{ width: 'auto' }} value={e.settings.sort} onChange={(ev) => e.set({ sort: ev.target.value })} aria-label={t('sort')}>
           <option value="STRENGTH">{t('sortStrength')}</option>
@@ -330,7 +306,7 @@ export function Live({ onOpen }) {
       </div>
       {e.flood && !e.flood.open && e.hiddenKeys.size > 0 && (
         <div className="note" style={{ marginBottom: 10 }}>
-          <b>{t('floodTitle')}</b> · {e.hiddenKeys.size} {t.lang === 'ar' ? 'عنواناً مخفياً من العرض المباشر' : 'addresses hidden from Live'}
+          <b>{t('floodTitle')}</b> · {t('floodHiddenNote', { n: e.hiddenKeys.size })}
           <button className="btn sm ghost" onClick={() => { e.hiddenKeys.clear(); e.emit() }}>{t('clearFilters')}</button>
         </div>
       )}
