@@ -161,7 +161,9 @@ export function GeoMap({ draw, fitKey = 'once', keys = '', height = 280, label, 
 
   useEffect(() => {
     if (!L || !ref.current || map.current) return
-    const m = L.map(ref.current, { zoomControl: false })
+    // No zoom/fade animation: these maps redraw every few seconds and can be unmounted
+    // mid-animation (leaving a tab), which made Leaflet throw reading `_leaflet_pos`.
+    const m = L.map(ref.current, { zoomControl: false, zoomAnimation: false, fadeAnimation: false, markerZoomAnimation: false })
     L.tileLayer(OSM, { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }).addTo(m)
     layer.current = L.layerGroup().addTo(m)
     map.current = m
@@ -188,8 +190,8 @@ export function GeoMap({ draw, fitKey = 'once', keys = '', height = 280, label, 
     const pts = (drawRef.current(L, layer.current) || []).filter((p) => p && Number.isFinite(p[0]) && Number.isFinite(p[1]))
     const fk = fitRef.current
     if (fitted.current !== fk && pts.length) {
-      if (pts.length > 1) map.current.fitBounds(L.latLngBounds(pts), { padding: [30, 30], maxZoom: 18 })
-      else map.current.setView(pts[0], 17)
+      if (pts.length > 1) map.current.fitBounds(L.latLngBounds(pts), { padding: [30, 30], maxZoom: 18, animate: false })
+      else map.current.setView(pts[0], 17, { animate: false })
       fitted.current = fk
     }
   }
