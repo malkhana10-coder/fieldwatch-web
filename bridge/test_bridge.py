@@ -5,6 +5,7 @@ Run from the repo root:  python3 -m unittest bridge/test_bridge.py
 
 import argparse
 import asyncio
+import ipaddress
 import json
 import logging
 import os
@@ -225,11 +226,35 @@ class TokenTests(unittest.TestCase):
         self.assertEqual(fb.connect_url("127.0.0.1", 8765, "abc"), "ws://127.0.0.1:8765/?token=abc")
         self.assertEqual(fb.connect_url("::1", 9000, "abc"), "ws://[::1]:9000/?token=abc")
         self.assertEqual(fb.connect_url("0.0.0.0", 1, "Q2x9_-"), "ws://127.0.0.1:1/?token=Q2x9_-")
+        self.assertEqual(fb.connect_url("", 1, "t"), "ws://127.0.0.1:1/?token=t")
+        self.assertEqual(fb.connect_url("::", 1, "t"), "ws://[::1]:1/?token=t")  # "::" is IPv6-only
         self.assertTrue(fb.is_loopback("127.0.0.1"))
         self.assertTrue(fb.is_loopback("localhost"))
         self.assertTrue(fb.is_loopback("::1"))
         self.assertFalse(fb.is_loopback("0.0.0.0"))
         self.assertFalse(fb.is_loopback("192.168.1.5"))
+
+    def test_lan_connect_urls(self):
+        addrs = ["192.168.1.20", "127.0.1.1", "127.0.0.1", "10.0.0.7", "192.168.1.20", "0.0.0.0",
+                 "169.254.3.4", "224.0.0.1", "fe80::1%eth0", "2001:db8::5", "not-an-ip", None, ""]
+        self.assertEqual(fb.lan_connect_urls("0.0.0.0", 8765, "a+b", addrs),
+                         ["ws://192.168.1.20:8765/?token=a%2Bb", "ws://10.0.0.7:8765/?token=a%2Bb"])
+        self.assertEqual(fb.lan_connect_urls("", 8765, "t", ["10.1.2.3"]), ["ws://10.1.2.3:8765/?token=t"])
+        # "::" is IPv6-only: only global / unique-local IPv6, bracketed; link-local needs a zone id.
+        self.assertEqual(fb.lan_connect_urls("::", 9, "t", addrs + ["fd00::2", "::1"]),
+                         ["ws://[2001:db8::5]:9/?token=t", "ws://[fd00::2]:9/?token=t"])
+        # A specific host has exactly one URL (connect_url); nothing extra is printed.
+        self.assertEqual(fb.lan_connect_urls("127.0.0.1", 8765, "t", addrs), [])
+        self.assertEqual(fb.lan_connect_urls("192.168.1.20", 8765, "t", addrs), [])
+        self.assertEqual(fb.lan_connect_urls("0.0.0.0", 8765, "t", []), [])
+        for url in fb.lan_connect_urls("0.0.0.0", 8765, "x&token=y#z", addrs):
+            self.assertTrue(fb.check_token(url.split(":8765", 1)[1], "x&token=y#z"), url)
+
+    def test_local_addresses_is_best_effort(self):
+        found = fb.local_addresses()
+        self.assertIsInstance(found, list)
+        for a in found:
+            self.assertEqual(ipaddress.ip_address(a).version, 4)
 
 
 class NmcliTests(unittest.TestCase):
@@ -461,6 +486,43 @@ class BleTests(unittest.TestCase):
             self.assertIn(t, types)
         last_counter = "%02X" % (n & 0xFF)
         self.assertIn(last_counter, [s["dataHex"][2:4] for s in m["svcData"]])  # newest kept
+
+    def test_odid_kind(self):
+        # 0D <counter> <header> <byte 1>: Basic ID keys on the ID type, Auth on the page.
+        self.assertEqual(fb._odid_kind("0D01" "02" "12" + "00" * 23), "01")   # Basic ID, serial
+        self.assertEqual(fb._odid_kind("0D02" "02" "42" + "00" * 23), "04")   # Basic ID, session ID
+        self.assertEqual(fb._odid_kind("0d03" "02" "2a" + "00" * 23), "02")   # lower case, CAA ID
+        self.assertEqual(fb._odid_kind("0D04" "22" "03" + "00" * 23), "23")   # Auth page 3
+        self.assertEqual(fb._odid_kind("0D05" "12" "20" + "00" * 23), "1")    # Location
+        self.assertEqual(fb._odid_kind("0D06" "52" "00" + "00" * 23), "5")    # Operator ID
+        self.assertEqual(fb._odid_kind("0D0702"), "0")                        # too short for byte 1
+        self.assertEqual(fb._odid_kind("0D07"), "")
+
+    def test_merge_remote_id_cap_keeps_both_basic_ids_and_auth_pages(self):
+        # Verify repro: serial + session Basic ID and 5 Auth pages, Location interleaved
+        # (20 adverts per cycle), 40 adverts in one window. The serial-number Basic ID is
+        # always followed by the session Basic ID, so a type-only key evicted it.
+        def adv(n, header, b1):
+            uuid = "0000fffa-0000-1000-8000-00805f9b34fb"
+            return FakeAdv(rssi=-60, service_uuids=[uuid],
+                           service_data={uuid: bytes([0x0D, n & 0xFF, header, b1]) + bytes(23)})
+        cycle = [(0x02, 0x12), (0x12, 0x20), (0x02, 0x42), (0x12, 0x20)]
+        cycle += [x for p in range(5) for x in ((0x22, 0x10 | p), (0x12, 0x20))]
+        cycle += [(0x32, 0x00), (0x12, 0x20), (0x42, 0x00), (0x12, 0x20), (0x52, 0x00), (0x12, 0x20)]
+        self.assertEqual(len(cycle), 20)
+        m = None
+        for n in range(40):
+            hdr, b1 = cycle[n % 20]
+            m = fb.merge_ble(m, fb.ble_to_item("AA:BB:CC:DD:EE:01", adv(n + 1, hdr, b1)))
+        odid = [s["dataHex"] for s in m["svcData"] if s["uuid"] == "FFFA"]
+        self.assertEqual(len(odid), fb.MAX_SVC_DATA)
+        heads = [h[4:8] for h in odid]
+        self.assertIn("0212", heads)                                      # serial-number Basic ID
+        self.assertIn("0242", heads)                                      # session Basic ID
+        self.assertEqual(sorted(h for h in heads if h[0] == "2"), ["2210", "2211", "2212", "2213", "2214"])
+        for t in ("1", "3", "4", "5"):
+            self.assertIn(t, [h[0] for h in heads])
+        self.assertIn("%02X" % 40, [h[2:4] for h in odid])                # newest kept
 
     def test_merge_cap_counts_other_service_data(self):
         m = fb.ble_to_item("AA:BB:CC:DD:EE:01", FakeAdv(rssi=-1, service_data={"feaa": b"\x01", "fd6f": b"\x02"}))

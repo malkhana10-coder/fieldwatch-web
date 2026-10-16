@@ -24,7 +24,9 @@ Protocol (server -> client, JSON text frames):
 Security: every client must present ?token=<token> in the connect URL, else the
 connection is closed with code 1008 (policy violation). Without it, any web page
 the user happens to visit could open ws://127.0.0.1:8765 and read nearby-device
-data. The bridge itself makes no network connections; it only listens.
+data. The bridge itself makes no network connections; it only listens. (With
+--host 0.0.0.0 or :: it also prints a connect URL per LAN address; finding the
+primary one uses a UDP socket connect(), which sends no packet.)
 
 Third-party imports (websockets, bleak) are lazy so the pure parsing functions
 can be imported and unit-tested without them.
@@ -49,6 +51,7 @@ import os
 import re
 import secrets
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -580,8 +583,23 @@ MAX_SVC_DATA = 16  # per address per window; matches the app's svcData cap
 
 
 def _odid_kind(data_hex: str) -> str:
-    """Message-type nibble of an FFFA payload (0D <counter> <header> ...)."""
-    return data_hex[4:5] if len(data_hex) >= 6 else ""
+    """Eviction key of an FFFA payload (0D <counter> <header> <byte 1> ...).
+
+    The message-type nibble (header high nibble), refined where a transmitter
+    legitimately rotates several messages of one type:
+    - Basic ID (type 0): plus the ID-type nibble (byte 1 high nibble), since
+      ASTM F3411 allows two Basic IDs (e.g. serial number + session/CAA ID).
+    - Authentication (type 2): plus the page-number nibble (byte 1 low nibble).
+    """
+    if len(data_hex) < 6:
+        return ""
+    kind = data_hex[4:5].upper()
+    if len(data_hex) >= 8:
+        if kind == "0":
+            return kind + data_hex[6:7].upper()
+        if kind == "2":
+            return kind + data_hex[7:8].upper()
+    return kind
 
 
 def _merge_svc(prev: List[Dict[str, Any]], new: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -590,8 +608,9 @@ def _merge_svc(prev: List[Dict[str, Any]], new: List[Dict[str, Any]]) -> List[Di
     Non-Remote-ID entries: the latest advert's, else the earlier one's.
     Remote ID (FFFA) entries: every distinct payload of the window, in arrival
     order, identical hex de-duplicated. Total length is capped at MAX_SVC_DATA;
-    on overflow the oldest FFFA entry whose message type is also carried by a
-    newer entry is evicted first, so each message type keeps its latest copy.
+    on overflow the oldest FFFA entry whose message kind (_odid_kind: type, and
+    the ID type for Basic ID / the page for Authentication) is also carried by
+    a newer entry is evicted first, so each kind keeps its latest copy.
     """
     other_new = [s for s in new if s.get("uuid") != ODID_UUID]
     other = other_new or [s for s in prev if s.get("uuid") != ODID_UUID]
@@ -774,13 +793,67 @@ def is_loopback(host: str) -> bool:
         return False
 
 
+WILDCARD_HOSTS = ("", "0.0.0.0", "::")
+
+
 def connect_url(host: str, port: int, token: str) -> str:
     h = host
-    if h in ("", "0.0.0.0", "::"):
+    if h in ("", "0.0.0.0"):
         h = "127.0.0.1"
+    elif h == "::":
+        h = "[::1]"  # asyncio makes a "::" socket IPv6-only, so 127.0.0.1 would not answer
     elif ":" in h and not h.startswith("["):
         h = "[%s]" % h
     return "ws://%s:%d/?token=%s" % (h, port, quote(token, safe=""))
+
+
+def local_addresses(family: int = socket.AF_INET) -> List[str]:
+    """This machine's addresses of one family, best effort, stdlib only.
+
+    The primary interface comes from a UDP socket "connect" to a documentation
+    address (connect() on UDP only picks a route; no packet is sent); the rest
+    from resolving the host name. May include loopback; see lan_connect_urls.
+    """
+    found: List[str] = []
+    probe = ("192.0.2.1", 9) if family == socket.AF_INET else ("2001:db8::1", 9)
+    try:
+        with socket.socket(family, socket.SOCK_DGRAM) as s:
+            s.connect(probe)
+            found.append(s.getsockname()[0])
+    except (OSError, ValueError):
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, family, socket.SOCK_DGRAM):
+            found.append(info[4][0])
+    except (OSError, UnicodeError, ValueError):
+        pass
+    return found
+
+
+def lan_connect_urls(host: str, port: int, token: str, addresses: Iterable[Any]) -> List[str]:
+    """Connect URLs for another device on this network, for a wildcard --host.
+
+    "0.0.0.0" (or "") gives one URL per usable IPv4 address; "::" one per
+    usable IPv6 address, since that socket is IPv6-only. Loopback, unspecified,
+    link-local and multicast addresses are skipped; order is kept and
+    duplicates dropped. Any other host gives [] (its own URL is the only one).
+    """
+    if host not in WILDCARD_HOSTS:
+        return []
+    version = 6 if host == "::" else 4
+    out: List[str] = []
+    for a in addresses:
+        try:
+            ip = ipaddress.ip_address(str(a).split("%", 1)[0].strip("[] "))
+        except ValueError:
+            continue
+        if (ip.version != version or ip.is_loopback or ip.is_unspecified
+                or ip.is_link_local or ip.is_multicast):
+            continue
+        url = connect_url(str(ip), port, token)
+        if url not in out:
+            out.append(url)
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -1032,6 +1105,19 @@ class Bridge:
             print("Fieldwatch bridge (protocol v%s, %s) listening." % (PROTOCOL_VERSION, self.platform),
                   file=sys.stderr)
             print("Connect URL: %s" % url, flush=True)
+            host = self.args.host
+            if host in WILDCARD_HOSTS:
+                fam = socket.AF_INET6 if host == "::" else socket.AF_INET
+                # Resolving the host name can be slow (e.g. mDNS), so keep it off the event loop.
+                addrs = await asyncio.get_running_loop().run_in_executor(None, local_addresses, fam)
+                lan = lan_connect_urls(host, self.args.port, self.token, addrs)
+                for u in lan:
+                    print("From another device on this network: %s" % u, flush=True)
+                if not lan:
+                    log.warning("Could not find this machine's network address. From another device, "
+                                "use ws://<this machine's IP>:%d/?token=<token>.", self.args.port)
+                if host == "::":
+                    log.warning("--host :: listens on IPv6 only; use --host 0.0.0.0 for IPv4 devices.")
             if not is_loopback(self.args.host):
                 log.warning("Host %s is not loopback: other machines on the network can "
                             "reach this bridge. Keep the token secret.", self.args.host)
@@ -1084,7 +1170,8 @@ class Bridge:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Stream real Wi-Fi / BLE scan data to Fieldwatch Web over a local WebSocket.")
-    p.add_argument("--host", default=DEFAULT_HOST, help="listen address (default 127.0.0.1)")
+    p.add_argument("--host", default=DEFAULT_HOST,
+                   help="listen address (default 127.0.0.1); 0.0.0.0 also prints a URL per LAN address")
     p.add_argument("--port", type=int, default=DEFAULT_PORT, help="listen port (default 8765)")
     p.add_argument("--token", default=None,
                    help="access token clients must send as ?token= (default: random)")
