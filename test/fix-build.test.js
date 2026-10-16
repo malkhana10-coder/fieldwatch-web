@@ -128,7 +128,8 @@ describe('production build (run from another directory)', () => {
     expect(list).toEqual(files)
     expect(list).toEqual(expect.arrayContaining(['./index.html', './data/signatures.json', './data/radiodb.json', './manifest.webmanifest']))
     expect(list.some((f) => /^\.\/assets\/leaflet.*\.js$/.test(f))).toBe(true)
-    expect(list.some((f) => /^\.\/assets\/leaflet.*\.css$/.test(f))).toBe(true)
+    // Leaflet's CSS ships inside the main stylesheet (a failed lazy stylesheet is never refetched).
+    expect(list.some((f) => /^\.\/assets\/index-.*\.css$/.test(f))).toBe(true)
     for (const f of list) expect(existsSync(join(dist, f)), f).toBe(true)
   })
 })
