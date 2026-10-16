@@ -1,19 +1,30 @@
 # CLAUDE.md — Fieldwatch Web
 
 ## What this is
-An **unofficial bilingual (Arabic/English) web port** of [Fieldwatch](https://github.com/OffGridPete/Fieldwatch), the passive Wi-Fi & Bluetooth LE field watcher for Android by Off Grid Pete LLC (MIT). This port is NOT made or reviewed by Off Grid Pete LLC — keep the "Unofficial web port" labels.
+An **unofficial bilingual (Arabic/English) web port** of [Fieldwatch](https://github.com/OffGridPete/Fieldwatch), the passive Wi-Fi & Bluetooth LE field watcher for Android by Off Grid Pete LLC (MIT). This port is NOT made or reviewed by Off Grid Pete LLC — keep the "Unofficial web port" labels. Version 1.3.1 ships as a static site (Netlify) and as an Android app (Capacitor wrapper, sideloaded APK).
 
 ## Stack
-- Vite 5 + React 18, plain JSX, no backend, no database, no secrets.
-- Node 20+ required. Build/test:
-  ```bash
-  npm ci
-  npm test        # all unit tests must pass
-  npm run build   # outputs dist/
-  ```
+- Vite 5 + React 18, plain JSX, no backend, no database, no secrets in the repo (the Android sideload keystore is the one deliberate exception, see Signing).
+- Capacitor 8 for Android (`@capacitor/core`, `@capacitor/android`, `@capacitor/cli`).
+- Node 20+ (CI uses 22). Android builds need JDK 21 and the Android SDK.
+
+## Commands
+```bash
+npm ci
+npm test                                   # vitest: test/engine, intel, odid, bridge — all must pass
+npx vitest run test/bridge.test.js         # one file
+python3 -m unittest bridge/test_bridge.py  # bridge parsers; stdlib only, no pip install needed
+npm run build                              # outputs dist/
+npx cap sync android                       # after a build: copies dist/ into android/
+(cd android && ./gradlew assembleRelease)  # signed release APK (see Signing)
+```
+Check that both i18n dictionaries have the same keys:
+```bash
+node -e "import('./src/i18n.js').then(({DICT:{en,ar}})=>{const a=Object.keys(en).filter(k=>!(k in ar)),b=Object.keys(ar).filter(k=>!(k in en));console.log({missingInAr:a,missingInEn:b});process.exitCode=a.length+b.length?1:0})"
+```
 
 ## Architecture (key files)
-- `src/engine/engine.js` — the engine: sources → sightings → matcher → live table, sits, log, alerts, flood detection, plus `trackingAssessment()` / `hiddenDevices()` / `watchedNetFor()` / `sentinelAlert()`.
+- `src/engine/engine.js` — the engine: sources → sightings → matcher → live table, sits, log, alerts, flood detection, plus `trackingAssessment()` / `hiddenDevices()` / `watchedNetFor()` / `sentinelAlert()`. `APP_VERSION` comes from `package.json` via Vite's `__APP_VERSION__` define.
 - `src/engine/catalog.js` — signature matcher (254 signatures, ~7k rules).
 - `src/engine/decode.js` — BLE field decoder (Remote ID, TPMS, Ruuvi, Govee, Tile…).
 - `src/engine/lookup.js` — ~40k IEEE OUIs + 4k Bluetooth company IDs.
@@ -21,29 +32,51 @@ An **unofficial bilingual (Arabic/English) web port** of [Fieldwatch](https://gi
 - `src/engine/intel.js` — pure: BLE address-rotation linking, tracker separated-from-owner state, `PlaceMemory` (familiar here / seen in several places, persisted in IndexedDB `places`), `locate()` RSSI localization.
 - `src/engine/odid.js` — Open Drone ID (ASTM F3411) decode/encode + `mergeDrone()`.
 - `src/engine/bridge.js` — validates WebSocket frames from `bridge/fieldwatch_bridge.py` (untrusted input).
-- `src/engine/ai.js` — Claude analysis via `@anthropic-ai/sdk` in the browser (user's own key, `claude-opus-5-5`, server-side fallback). `livePrompt()` must never include coordinates.
+- `src/engine/ai.js` — Claude analysis via `@anthropic-ai/sdk` in the browser (user's own key, `claude-opus-5-5`, server-side fallback). `livePrompt()` and `aiPrompt()` (reports.js) must never include coordinates.
+- `src/engine/storage.js` — localStorage/IndexedDB wrappers, `download()` and `pickFile()`. `download()` has three paths: the claude.ai viewer, the **Android app (native share sheet through `src/native.js`)**, and a normal browser download. Every export must go through `download()`.
+- `src/native.js` — Android-only glue for the Capacitor app (native-app detection, sharing export files through the Android share sheet). Guard every native call so the same bundle still works in a plain browser.
 - `src/leaflet.jsx` — lazy Leaflet loader + `GeoMap` component. `src/screens/Intel.jsx` — trackers / place / multi-place / drones / AI / locate cards.
-- `bridge/` — Python companion (websockets + optional bleak) for real Wi-Fi/BLE; token-protected; `python3 -m unittest bridge/test_bridge.py`.
 - `src/screens/*.jsx` — Live, Detail, Hunt, Signatures, Reports, Settings, Dashboard, Intel (cards).
-- `src/i18n.js` — ALL user-facing strings live here (en + ar). **Every new string must be added to BOTH dicts.**
+- `src/i18n.js` — ALL user-facing strings live here (en + ar).
 - `src/styles.css` — theming via CSS vars (`--bg`, `--accent`, `--danger`…), themes: light/dark/night.
+- `bridge/` — Python companion (websockets + optional bleak) for real Wi-Fi/BLE; token-protected. Termux on Android gives Wi-Fi only (`termux-wifi-scaninfo`); BLE in Termux is not expected to work.
+- `docs/` — user guides: `ANDROID.md` (English), `ANDROID.ar.md` and `USER-GUIDE.ar.md` (Arabic). They quote UI labels from `src/i18n.js`.
+
+## Android (`android/`, `capacitor.config.json`)
+- Capacitor project. App ID `io.github.malkhana10.fieldwatch`, app name "Fieldwatch", `webDir: dist`, minSdk 24, compile/target SDK 36. `MainActivity` is the stock `BridgeActivity`.
+- Manifest permissions: `INTERNET`, coarse/fine location (optional; Locate, places, sits), `VIBRATE`. No Bluetooth or Wi-Fi permissions: Android's WebView has no Web Bluetooth and cannot scan Wi-Fi, so the bridge is the only real-radio source in the app.
+- The app allows cleartext `ws://` only to localhost and LAN addresses (for the bridge). Don't widen it to the public internet.
+- Device-only secrets (`aiKey`, Telegram token/chat ID, `bridgeUrl`) stay out of exports; `aiKey` must also stay out of Android backups.
+- Generated by `npx cap sync android` and git-ignored: `android/app/src/main/assets/public`, `android/app/src/main/assets/capacitor.config.json` / `capacitor.plugins.json`, `android/capacitor-cordova-android-plugins`. Never edit them; change `src/` and re-sync.
+- **Signing:** the release build is signed with a fixed sideload keystore committed in the repo, so every CI build installs over the previous one and keeps user data. Anyone with the repo can sign an update — acceptable for personal sideloading only. For distribution, set the `KEYSTORE_*` GitHub secrets (names in `.github/workflows/android.yml`), which override it. Never commit a private production key.
+- **Version:** `package.json` `version` is the source of truth (Settings › About, exports, release name). `versionCode` is `GITHUB_RUN_NUMBER`. Keep `versionName` in `android/app/build.gradle` in step when you bump the version.
+- **CI** (`.github/workflows/android.yml`): runs on push to `main` or `fix/v1.2-review` and on manual dispatch. Steps: `npm ci`, `npm test`, `npm run build`, `npx cap sync android`, Gradle release build. It then uploads the APK as a workflow artifact and publishes a GitHub **pre-release** (tag `android-build-<run>`, name "Fieldwatch <version> (Android build <run>)") with the `.apk` attached.
 
 ## Conventions (respect these)
-- Bilingual: add every string to both `en` and `ar` in `src/i18n.js`. App is RTL in Arabic.
+- Bilingual: **every new i18n key must be added to BOTH `en` and `ar` in `src/i18n.js`** (run the parity check above). The app is RTL in Arabic. Arabic is Modern Standard Arabic.
 - UI primitives in `src/ui.jsx` (`Icon`, `Sheet`, `Seg`, `Switch`, `Setting`, `Glyph`, `Bars`, `ConfirmButton`). Icons are inline SVG paths keyed by name.
 - Radio colour: `radioColor(engine, r)` in `Live.jsx` returns a CSS var (`var(--danger)`) or a PALETTE hex. For Leaflet (real map) use the local `mapHex()` which returns actual hex.
 - Real map uses Leaflet (npm dependency, lazy-loaded by `MapView` so it works offline) + OpenStreetMap tiles — the tiles need internet.
 - Telegram token/chat ID, `bridgeUrl` and `aiKey` are device-only (`DEVICE_ONLY_SETTINGS`): `portableSettings()` strips them from every export and import. Send alerts through `notifyTelegram()` (batched + rate-limited), not `sendTelegram()` directly.
-- Keep `LICENSE` and `NOTICE`. Never commit tokens.
+- Features must keep working in a plain browser and in the Android WebView. Check native-only code with the helpers in `src/native.js`.
+- When you rename a UI label, update the docs that quote it (`docs/*.md`, `README.md`).
+- Keep `LICENSE` and `NOTICE`. Never commit tokens or API keys.
 
-## Recent changes (v1.3.0)
+## Recent changes (v1.3.1)
+- Android app: Capacitor wrapper, native share sheet for exports ("Share report (HTML)" replaces Print/PDF in the app), signed release APK published by GitHub Actions.
+- UI audit fixes: layout, RTL, night theme, accessibility, Arabic wording, map XSS.
+- Bridge audit fixes: keep every Remote ID message, slow clients, floods, `addrType`.
+- Engine/security/offline audit: matcher, imports, privacy, linking, service worker, CSP. The app version now comes from `package.json`.
+
+## v1.3.0
 - Added: address-rotation linking, trackers away from owner + alert, place memory (familiar/new, learn place, sentinel "new here only", seen in several places), RSSI localization in Hunt, full Remote ID drone panel + map, Claude analysis (live + per sit), bridge source for real Wi-Fi/BLE.
 
 ## v1.2.0
 - Added: Dashboard tab, real OpenStreetMap map (Leaflet), Sentinel mode, "Am I being followed?" detector, "Hidden devices" detector, Telegram alerts, watched networks, full backup/restore, PDF report header.
 
 ## Sources
-Browsers can't see Wi-Fi. Four data sources: field simulator (demo), Web Bluetooth LE scan (needs Chrome + experimental flags), the bridge (real Wi-Fi + BLE from `bridge/`), and log replay (Fieldwatch CSV/JSONL).
+Browsers can't see Wi-Fi. Four data sources: field simulator (demo), Web Bluetooth LE scan (needs Chrome + experimental flags; not available in the Android WebView), the bridge (real Wi-Fi + BLE from `bridge/`), and log replay (Fieldwatch CSV/JSONL).
 
 ## Deploy
-`netlify.toml` builds the site (publish `dist`). Netlify: Import from Git, keep detected settings. Or `npm run build && npx netlify-cli deploy --dir=dist --prod`.
+- Web: `netlify.toml` builds the site (publish `dist`). Netlify: Import from Git, keep detected settings. Or `npm run build && npx netlify-cli deploy --dir=dist --prod`.
+- Android: push to `main` or `fix/v1.2-review` (or run the "Android APK" workflow by hand) and the APK appears as a pre-release under Releases. See `HERMES.md` and `docs/ANDROID.md`.
