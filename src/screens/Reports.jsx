@@ -54,6 +54,11 @@ function Debrief({ sit, onClose }) {
   return (
     <Sheet title={`${t('debrief')} · ${sit.name}`} onClose={onClose} className="debrief">
       <div className="stack">
+        <div className="print-only report-head">
+          <div style={{ fontSize: 22, fontWeight: 800 }}>{t('appName')} — {t('report')}</div>
+          <div style={{ fontSize: 15 }}>{sit.name}</div>
+          <div className="small muted">{t.date(sit.start)} → {sit.end ? t.date(sit.end) : t('sitRunning')} · {t('printGenerated')} {t('appName')} Web · {t('catalogVersion')} #{e.catalogVersion}</div>
+        </div>
         <div className="row wrap no-print">
           <button className="btn sm" onClick={() => download(fname + '.csv', sitCsv(sit, e, privacy), 'text/csv')}><Icon name="download" size={14} />{t('exportCsv')}</button>
           <button className="btn sm" onClick={() => download(fname + '.json', JSON.stringify(sit, null, 1), 'application/json')}><Icon name="download" size={14} />{t('exportJson')}</button>

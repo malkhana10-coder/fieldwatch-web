@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import { useEngine, Icon, Glyph, Bars, Sparkline, Seg, ago, CLASS_ICON } from '../ui.jsx'
 import { PALETTE } from '../engine/catalog.js'
 import { maskMac } from '../engine/geo.js'
@@ -40,6 +40,7 @@ function RadioRow({ r, onOpen, now }) {
         <div className="row" style={{ gap: 6 }}>
           <span className={'radio-name ellipsis' + (!e.displayName(r) ? ' muted' : '')}>{name}</span>
           {named?.mine && <span className="tag ok">{t('mine')}</span>}
+          {e.watchedNetFor(r) && <span className="tag info">{t('watchedTag')}</span>}
           {e.coTravel(r) && !named?.mine && <span className="tag warn">{t('movingWithYou')}</span>}
         </div>
         <div className="radio-meta">
@@ -193,6 +194,86 @@ function Timeline({ radios, onOpen, now }) {
   )
 }
 
+/** Real hex colour for Leaflet (CSS vars don't work there). */
+function mapHex(e, r) {
+  if (r.attention) return '#c62839'
+  const f = r.fleetIds[0] && e.fleetById(r.fleetIds[0])
+  if (f) return PALETTE[f.colorIndex % PALETTE.length]
+  return r.kind === 'WIFI' ? '#1a6fb5' : '#7a4fd6'
+}
+
+function MapView({ radios, onOpen }) {
+  const e = useEngine()
+  const t = e.t
+  const mapRef = useRef(null)
+  const map = useRef(null)
+  const layer = useRef(null)
+  const fitted = useRef(false)
+
+  // init the OpenStreetMap once
+  useEffect(() => {
+    if (!window.L || !mapRef.current || map.current) return
+    const m = window.L.map(mapRef.current, { zoomControl: true })
+    window.L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19, attribution: '&copy; OpenStreetMap contributors',
+    }).addTo(m)
+    layer.current = window.L.layerGroup().addTo(m)
+    map.current = m
+    return () => { try { m.remove() } catch { /* ignore */ } map.current = null; layer.current = null; fitted.current = false }
+  }, [])
+
+  // redraw path + markers each render; auto-fit only the first time
+  useEffect(() => {
+    if (!map.current || !layer.current) return
+    const lg = layer.current
+    lg.clearLayers()
+    const sit = e.activeSit()
+    const path = sit ? [...sit.path] : []
+    const marks = []
+    for (const r of radios) {
+      if (r.positions.length) {
+        const p = r.positions[r.positions.length - 1]
+        marks.push({ lat: p.lat, lon: p.lon, r })
+      }
+    }
+    if (path.length > 1) {
+      window.L.polyline(path.map((p) => [p.lat, p.lon]), { color: '#0a8f5a', weight: 3, opacity: 0.8 }).addTo(lg)
+    }
+    for (const p of marks) {
+      const col = mapHex(e, p.r)
+      const mk = window.L.circleMarker([p.lat, p.lon], {
+        radius: p.r.attention ? 8 : 5, color: p.r.attention ? '#c62839' : col, weight: 1.5,
+        fillColor: p.r.attention ? '#c62839' : col, fillOpacity: 0.9,
+      })
+      mk.bindPopup((e.displayName(p.r) || p.r.mac) + ' @ ' + p.r.rssi + ' dBm')
+      mk.on('click', () => onOpen(p.r.key))
+      mk.addTo(lg)
+    }
+    const you = e.pos || path[path.length - 1]
+    if (you) {
+      window.L.circleMarker([you.lat, you.lon], { radius: 7, color: '#0f1a17', weight: 2, fillColor: '#ffffff', fillOpacity: 1 })
+        .addTo(lg).bindPopup(t('mapYou'))
+    }
+    const all = [...path, ...marks]
+    if (!fitted.current) {
+      if (all.length >= 2) map.current.fitBounds(window.L.latLngBounds(all.map((p) => [p.lat, p.lon])), { padding: [36, 36] })
+      else if (you) map.current.setView([you.lat, you.lon], 15)
+      if (all.length >= 2 || you) fitted.current = true
+    }
+  })
+
+  const hasData = radios.some((r) => r.positions.length) || (e.activeSit()?.path?.length >= 2) || !!e.pos
+
+  return (
+    <div className="card">
+      {hasData
+        ? <div ref={mapRef} style={{ height: '52vh', minHeight: 340, borderRadius: 'var(--radius)' }} />
+        : <div className="empty"><Icon name="pin" size={40} /><div>{t('mapNoGps')}</div></div>}
+      <div className="tiny faint" style={{ padding: '8px 12px' }}>{t('mapHint')}</div>
+    </div>
+  )
+}
+
 export function Live({ onOpen }) {
   const e = useEngine()
   const t = e.t
@@ -216,6 +297,7 @@ export function Live({ onOpen }) {
           { value: 'RADAR', icon: 'radar', label: <span className="hide-sm">{t('viewRadar')}</span> },
           { value: 'CLASS', icon: 'grid', label: <span className="hide-sm">{t('viewClass')}</span> },
           { value: 'TIMELINE', icon: 'chart', label: <span className="hide-sm">{t('viewTimeline')}</span> },
+          { value: 'MAP', icon: 'pin', label: <span className="hide-sm">{t('viewMap')}</span> },
         ]} />
       </div>
       <div className="stats">
@@ -256,6 +338,7 @@ export function Live({ onOpen }) {
       ) : view === 'RADAR' ? <Radar radios={radios} onOpen={onOpen} />
         : view === 'CLASS' ? <ByClass radios={radios} onOpen={onOpen} now={now} />
           : view === 'TIMELINE' ? <Timeline radios={radios} onOpen={onOpen} now={now} />
+            : view === 'MAP' ? <MapView radios={radios} onOpen={onOpen} />
             : <div className="radio-list">{radios.slice(0, 300).map((r) => <RadioRow key={r.key} r={r} onOpen={onOpen} now={now} />)}</div>}
       {showFilters && <Filters onClose={() => setShowFilters(false)} />}
     </div>

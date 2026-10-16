@@ -62,6 +62,54 @@ export function Settings() {
           </select>
         </Setting>
         <Setting title={t('floodDetect')}><Switch checked={s.floodDetect} onChange={(v) => e.set({ floodDetect: v })} /></Setting>
+        <Setting title={t('sentinel')} hint={t('sentinelHint')}><Switch checked={s.sentinel} onChange={(v) => e.set({ sentinel: v })} /></Setting>
+      </div>
+
+      <div className="section-title">{t('watchedNets')}</div>
+      <div className="card">
+        <form className="setting" style={{ flexWrap: 'wrap' }} onSubmit={(ev) => {
+          ev.preventDefault()
+          const v = ev.target.net.value.trim()
+          if (!v) return
+          const cur = s.watchedNets || []
+          if (!cur.some((w) => w.toLowerCase() === v.toLowerCase())) e.set({ watchedNets: [...cur, v] })
+          ev.target.net.value = ''
+        }}>
+          <div className="grow">
+            <div>{t('watchedNets')}</div>
+            <div className="small muted">{t('watchedNetsHint')}</div>
+          </div>
+          <input className="input" name="net" placeholder={t('netName')} style={{ width: 180, minHeight: 38 }} />
+          <button className="btn sm" type="submit"><Icon name="plus" size={14} />{t('addNet')}</button>
+        </form>
+        {(s.watchedNets || []).length > 0 && (
+          <div className="setting" style={{ flexWrap: 'wrap', gap: 8 }}>
+            {(s.watchedNets || []).map((w) => (
+              <span key={w} className="chip">{w}<button className="btn sm icon ghost" onClick={() => e.set({ watchedNets: (s.watchedNets || []).filter((x) => x !== w) })} aria-label={t('delete')}><Icon name="x" size={13} /></button></span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="section-title">{t('tgSection')}</div>
+      <div className="card">
+        <Setting title={t('tgEnabled')} hint={t('tgHint')}><Switch checked={s.tgEnabled} onChange={(v) => e.set({ tgEnabled: v })} /></Setting>
+        <div className="setting" style={{ flexWrap: 'wrap' }}>
+          <div style={{ flex: '1 0 100%' }}>{t('tgToken')}</div>
+          <input className="input" type="password" dir="ltr" value={s.tgToken || ''} placeholder="123456789:AA…" autoComplete="off" onChange={(ev) => e.set({ tgToken: ev.target.value.trim() })} />
+        </div>
+        <div className="setting" style={{ flexWrap: 'wrap' }}>
+          <div style={{ flex: '1 0 100%' }}>{t('tgChatId')}</div>
+          <input className="input" dir="ltr" value={s.tgChatId || ''} placeholder="123456789" autoComplete="off" onChange={(ev) => e.set({ tgChatId: ev.target.value.trim() })} />
+        </div>
+        <div className="setting">
+          <span className="grow small muted">{t('tgHint')}</span>
+          <button className="btn sm" onClick={async () => {
+            if (!s.tgToken || !s.tgChatId) return e.toast(t('tgNeedToken'), 'warn')
+            const err = await e.sendTelegram(t('appName') + ' — ' + t('tgTest'))
+            err ? e.toast(t('tgFail', { e: err }), 'warn') : e.toast(t('tgSent'))
+          }}><Icon name="bell" size={14} />{t('tgTest')}</button>
+        </div>
       </div>
 
       <div className="section-title">{t('source')}</div>
@@ -88,8 +136,15 @@ export function Settings() {
           if (!f) return
           try { e.importSettings(f.text); e.toast('✓') } catch (err) { e.toast(t('importFailed', { e: err.message }), 'warn') }
         }}><Icon name="upload" size={15} />{t('importSettings')}</button>
+        <button className="btn" onClick={() => download('fieldwatch-backup.json', e.exportAll(), 'application/json')}><Icon name="download" size={15} />{t('exportAll')}</button>
+        <button className="btn" onClick={async () => {
+          const f = await pickFile('.json')
+          if (!f) return
+          try { const r = await e.importAll(f.text); e.toast(t('importedAll', { n: r.sits, m: r.log })) } catch (err) { e.toast(t('importFailed', { e: err.message }), 'warn') }
+        }}><Icon name="upload" size={15} />{t('importAll')}</button>
         {canInstall && <button className="btn primary" onClick={async () => { deferredInstall?.prompt(); deferredInstall = null; setCanInstall(false) }}><Icon name="download" size={15} />{t('install')}</button>}
       </div>
+      <div className="small muted" style={{ padding: '0 4px 8px' }}>{t('backupHint')}</div>
 
       <div className="section-title">{t('diagnostics')}</div>
       <div className="card card-pad">
@@ -103,7 +158,7 @@ export function Settings() {
 
       <div className="section-title">{t('about')}</div>
       <div className="card card-pad stack small">
-        <div><b>{t('appName')} Web</b> · {t('version')} 1.0.0 · {t('unofficial')}</div>
+        <div><b>{t('appName')} Web</b> · {t('version')} 1.2.0 · {t('unofficial')}</div>
         <div className="muted">{t('disclaimer')}</div>
         <div className="muted">{t('disclaimerPort')}</div>
         <div className="muted" dir="ltr" style={{ textAlign: 'start' }}>Fieldwatch © 2026 Off Grid Pete LLC — MIT License. IEEE and Bluetooth SIG assigned-number tables are subject to those organizations' terms.</div>

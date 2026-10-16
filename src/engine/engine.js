@@ -16,6 +16,7 @@ function defaultSettings() {
   return {
     lang, theme: 'system', privacy: false, sound: true, vibrate: true, voice: false, notify: false, cooldown: 60,
     location: false, density: 'BALANCED', floodDetect: true, source: 'demo', view: 'LIST', sort: 'STRENGTH',
+    tgEnabled: false, tgToken: '', tgChatId: '', watchedNets: [], sentinel: false,
     accepted: false, filters: { ...DEFAULT_FILTERS }, presets: [],
   }
 }
@@ -147,7 +148,7 @@ class Engine {
     return clean.length
   }
   exportSignatures() {
-    return JSON.stringify({ format: 'fieldwatch-signatures', formatVersion: 1, exportedAt: new Date().toISOString(), appVersion: 'web-1.0.0', catalogVersion: this.catalogVersion, fleets: this.fleets }, null, 1)
+    return JSON.stringify({ format: 'fieldwatch-signatures', formatVersion: 1, exportedAt: new Date().toISOString(), appVersion: 'web-1.2.0', catalogVersion: this.catalogVersion, fleets: this.fleets }, null, 1)
   }
 
   // ---------- named radios ----------
@@ -204,7 +205,8 @@ class Engine {
       this.logRow(r, now)
       if (sit) this.sitRecord(sit, r, now)
       if (isNew && r.kind === 'BLE') this.trackFlood(r, now)
-      this.maybeAlert(r, now)
+      this.maybeAlert(r, now, isNew)
+      if (isNew && this.settings.sentinel) this.sentinelAlert(r)
     }
   }
 
@@ -214,6 +216,13 @@ class Engine {
 
   isMine(r) { return !!this.named[r.key]?.mine }
   displayName(r) { return this.named[r.key]?.name || r.name }
+  /** First watched network whose SSID matches (case-insensitive). */
+  watchedNetFor(r) {
+    const list = this.settings.watchedNets || []
+    const name = (r.name || '').toLowerCase().trim()
+    if (!name) return null
+    return list.find((w) => w && name === String(w).toLowerCase().trim()) || null
+  }
 
   /** Live list after filters. */
   visibleRadios(now = Date.now()) {
@@ -266,6 +275,49 @@ class Engine {
     return r.positions.some((p) => distM(first, p) > 200) && r.lastSeen - r.firstSeen > 3 * 60 * 1000
   }
 
+  /** Sentinel mode: announce any brand-new device. */
+  sentinelAlert(r) {
+    if (this.isMine(r) || this.hiddenKeys.has(r.key)) return
+    const nm = this.displayName(r) || r.mac
+    this.toast(`${this.t('newDevice')}: ${nm}`, 'info', r.key)
+    if (this.settings.tgEnabled) this.sendTelegram(`${this.t('newDevice')}: ${nm} (${r.kind}) @ ${r.rssi} dBm`)
+  }
+
+  /** Heuristic: how likely the user is being followed. Returns { level, reasons:[{r,why}] }. */
+  trackingAssessment(now = Date.now()) {
+    const reasons = []
+    for (const r of this.radios.values()) {
+      if (now - r.lastSeen > 10 * 60 * 1000) continue
+      if (this.isMine(r)) continue
+      if (!this.coTravel(r)) continue
+      let why
+      if (r.cls === 'FINDER') why = 'whyFinder'
+      else if (r.attention) why = 'whyAttn'
+      else if (r.kind === 'BLE' && r.randomized) why = 'whyBle'
+      else why = 'whyCotravel'
+      reasons.push({ r, why })
+    }
+    reasons.sort((a, b) => b.r.rssi - a.r.rssi)
+    const level = reasons.length >= 3 ? 'HIGH' : reasons.length >= 1 ? 'MEDIUM' : 'LOW'
+    return { level, reasons }
+  }
+
+  /** Devices that look like they are trying to stay hidden. */
+  hiddenDevices(now = Date.now()) {
+    const out = []
+    for (const r of this.radios.values()) {
+      if (now - r.lastSeen > 10 * 60 * 1000) continue
+      if (this.isMine(r)) continue
+      if (r.hidden) { out.push({ r, why: 'hiddenSsid' }); continue }
+      const noName = !r.name
+      const noFleet = !r.fleetIds.length
+      if (noName && r.randomized && !r.vendor) out.push({ r, why: 'hiddenRand' })
+      else if (noName && !r.vendor && noFleet && r.kind === 'BLE') out.push({ r, why: 'hiddenAnon' })
+    }
+    out.sort((a, b) => b.r.rssi - a.r.rssi)
+    return out
+  }
+
   // ---------- flood ----------
   trackFlood(r, now) {
     if (!this.settings.floodDetect) return
@@ -284,6 +336,7 @@ class Engine {
     if (now < this.floodHoldUntil) { this.toast(this.t('floodTitle') + ' · ' + keys.length, 'warn'); return }
     this.flood = { open: true, n: keys.length, keys, t: now }
     this.floodHoldUntil = now + 15 * 60 * 1000
+    if (this.settings.tgEnabled) this.sendTelegram(`${this.t('floodTitle')}: ${keys.length}`)
     this.beep(520, 0.25)
   }
   resolveFlood(hide) {
@@ -294,16 +347,18 @@ class Engine {
   }
 
   // ---------- alerts ----------
-  maybeAlert(r, now) {
+  maybeAlert(r, now, isNew) {
     const named = this.named[r.key]
     if (named?.mine) return
     const watchHit = r.fleetIds.find((id) => this.watch.has(id))
-    if (!watchHit && !named?.alert) return
+    const watchedNet = this.watchedNetFor(r)
+    if (watchedNet && !isNew) return
+    if (!watchHit && !named?.alert && !watchedNet) return
     const last = this.lastAlert.get(r.key) || 0
     if (now - last < this.settings.cooldown * 1000) return
     this.lastAlert.set(r.key, now)
     const t = this.t
-    const sig = watchHit ? this.fleetById(watchHit)?.name : named?.name || t('alertOn')
+    const sig = watchedNet ? `${t('alertWatched')}: ${watchedNet}` : watchHit ? this.fleetById(watchHit)?.name : named?.name || t('alertOn')
     // Unicode isolates keep Latin names and negative numbers in order inside Arabic sentences.
     const iso = (v) => '\u2068' + v + '\u2069'
     const body = t('alertBody', { sig: iso(sig), name: iso(this.displayName(r) || r.mac), rssi: '\u2066' + r.rssi + '\u2069' })
@@ -314,6 +369,7 @@ class Engine {
     if (this.settings.notify && typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.hidden) {
       try { new Notification(t('alertTitle'), { body, tag: r.key, icon: 'icon.svg' }) } catch { /* ignore */ }
     }
+    if (this.settings.tgEnabled) this.sendTelegram(`${t('alertTitle')}: ${sig} — ${this.displayName(r) || r.mac} @ ${r.rssi} dBm`)
   }
 
   toast(text, kind = 'info', key) {
@@ -358,6 +414,25 @@ class Engine {
       speechSynthesis.cancel()
       speechSynthesis.speak(u)
     } catch { /* ignore */ }
+  }
+
+  /** Fire-and-forget push to the user's own Telegram bot (Bot API). Token is the user's, entered at runtime. */
+  async sendTelegram(text) {
+    const { tgToken, tgChatId } = this.settings
+    if (!tgToken || !tgChatId) return 'missing credentials'
+    try {
+      const res = await fetch(`https://api.telegram.org/bot${tgToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: tgChatId, text, disable_web_page_preview: true }),
+      })
+      const j = await res.json()
+      if (!j.ok) throw new Error(j.description || ('HTTP ' + res.status))
+      return null
+    } catch (e) {
+      console.warn('telegram send failed', e)
+      return e && e.message ? e.message : String(e)
+    }
   }
 
   // ---------- log ----------
@@ -551,6 +626,27 @@ class Engine {
     if (j.named && typeof j.named === 'object') { this.named = j.named; ls.set('named', this.named) }
     if (Array.isArray(j.watch)) { this.watch = new Set(j.watch); ls.set('watch', j.watch) }
     this.emit()
+  }
+  exportAll() {
+    return JSON.stringify({
+      format: 'fieldwatch-web-backup', version: 1, exportedAt: new Date().toISOString(),
+      settings: { ...this.settings, accepted: undefined }, named: this.named, watch: [...this.watch],
+      fleets: this.fleets, sits: this.sits, log: this.log,
+    }, null, 1)
+  }
+  async importAll(text) {
+    const j = JSON.parse(text)
+    if (j.format !== 'fieldwatch-web-backup') throw new Error('not a Fieldwatch backup file')
+    if (j.settings && typeof j.settings === 'object') this.set({ ...j.settings, accepted: true })
+    if (j.named && typeof j.named === 'object') { this.named = j.named; ls.set('named', this.named) }
+    if (Array.isArray(j.watch)) { this.watch = new Set(j.watch); ls.set('watch', j.watch) }
+    if (Array.isArray(j.fleets) && j.fleets.length) await this.saveFleets(j.fleets)
+    if (Array.isArray(j.sits)) { this.sits = j.sits; await idb.set('sits', this.sits) }
+    if (Array.isArray(j.log)) { this.log = j.log.slice(0, LOG_CAP); await idb.set('log', this.log) }
+    const open = this.sits.find((s) => !s.end)
+    this.activeSitId = open ? open.id : null
+    this.emit()
+    return { sits: this.sits.length, log: this.log.length }
   }
   async resetAll() {
     this.stop()

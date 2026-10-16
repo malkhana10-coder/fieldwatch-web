@@ -1,7 +1,7 @@
 {
   "name": "fieldwatch-web",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.2.0",
   "type": "module",
   "description": "Unofficial bilingual (Arabic/English) web port of Fieldwatch — passive Wi-Fi / BLE field watcher.",
   "license": "MIT",

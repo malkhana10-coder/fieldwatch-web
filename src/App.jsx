@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useEngine, Icon, Sheet } from './ui.jsx'
+import { Dashboard } from './screens/Dashboard.jsx'
 import { Live } from './screens/Live.jsx'
 import { Detail } from './screens/Detail.jsx'
 import { Hunt } from './screens/Hunt.jsx'
@@ -26,6 +27,7 @@ function useTheme(theme) {
 }
 
 const TABS = [
+  { id: 'home', icon: 'home', key: 'tabHome' },
   { id: 'live', icon: 'radar', key: 'tabLive' },
   { id: 'hunt', icon: 'target', key: 'tabHunt' },
   { id: 'sigs', icon: 'book', key: 'tabSignatures' },
@@ -38,7 +40,7 @@ export default function App() {
   const t = e.t
   const s = e.settings
   const resolved = useTheme(s.theme)
-  const [tab, setTab] = useState(() => (location.hash.slice(1) || 'live'))
+  const [tab, setTab] = useState(() => (location.hash.slice(1) || 'home'))
   const [detail, setDetail] = useState(null)
 
   useEffect(() => {
@@ -84,7 +86,8 @@ export default function App() {
 
       <main>
         {!e.ready ? <div className="empty"><Icon name="radar" size={40} /><div>…</div></div>
-          : tab === 'live' ? <Live onOpen={setDetail} />
+          : tab === 'home' ? <Dashboard onOpen={setDetail} />
+            : tab === 'live' ? <Live onOpen={setDetail} />
             : tab === 'hunt' ? <Hunt />
               : tab === 'sigs' ? <Signatures />
                 : tab === 'reports' ? <Reports />
