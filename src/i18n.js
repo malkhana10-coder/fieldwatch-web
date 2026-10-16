@@ -124,6 +124,7 @@ const en = {
   tgHint: 'Watchlist and alert hits go to your own bot through the Telegram Bot API. The token and chat ID stay on this device only and are left out of exports. Alerts are batched, one message every few seconds at most.',
   tgSent: 'Test message sent', tgFail: 'Telegram send failed: {e}', tgNeedToken: 'Set the bot token and chat ID first.',
   tgMore: '{n} more alerts were skipped',
+  exportFailed: 'Could not save {file}: {e}',
   // map
   mapHint: 'Where each radio was heard, relative to your route — not where the radio actually is.',
   mapNoGps: 'Enable location (Settings) or start a sit to plot positions.',
@@ -294,6 +295,7 @@ const ar = {
   tgHint: 'تصل تنبيهات قائمة المراقبة إلى بوتك الخاص عبر Telegram Bot API. يبقى الرمز ومعرّف الدردشة على هذا الجهاز فقط ولا يدخلان في ملفات التصدير. تُجمَع التنبيهات في رسالة واحدة كل بضع ثوانٍ على الأكثر.',
   tgSent: 'تم إرسال رسالة التجربة', tgFail: 'فشل الإرسال إلى تيليجرام: {e}', tgNeedToken: 'أدخل رمز البوت ومعرّف الدردشة أولاً.',
   tgMore: 'تم تخطّي تنبيهات إضافية: {n}',
+  exportFailed: 'تعذّر حفظ {file}: {e}',
   mapHint: 'مكان سماع كل جهاز بالنسبة لمسارك — وليس الموقع الحقيقي للجهاز.',
   mapNoGps: 'فعّل الموقع (الإعدادات) أو ابدأ جلسة لرسم المواقع.',
   mapYou: 'أنت', mapPath: 'المسار',

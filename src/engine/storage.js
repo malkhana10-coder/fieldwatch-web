@@ -2,6 +2,8 @@
 // the log and an imported catalog. Every access is guarded; the app still runs
 // (in memory only) when storage is blocked.
 
+import { isNative } from '../native.js'
+
 export const ls = {
   get(key, fallback) {
     try {
@@ -77,7 +79,43 @@ const VIEWER_EXTS = new Set(['txt', 'json', 'md', 'csv', 'html', 'svg', 'pdf'])
 let viewerDl = null
 if (inViewer) window.claude.use('downloads').then((x) => { viewerDl = x }).catch(() => {})
 
+// The Android WebView ignores <a download> (Capacitor registers no DownloadListener),
+// so in the app the file is written to the app's private cache and handed to the
+// Android share sheet, where the user picks where it goes (Files, Drive, mail…).
+// The plugins are imported on demand so the website never downloads them.
+function exportName(filename) {
+  const name = String(filename).replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '_').replace(/^\.+/, '')
+  return name || 'fieldwatch-export.txt'
+}
+
+async function shareNative(filename, text) {
+  const name = exportName(filename)
+  try {
+    const [{ Filesystem, Directory, Encoding }, { Share }] = await Promise.all([
+      import('@capacitor/filesystem'),
+      import('@capacitor/share'),
+    ])
+    // The cache is private to the app (like its IndexedDB) and Android may clear it when space is low.
+    // Old exports are not deleted here: the app the user shared to may still be reading one.
+    const { uri } = await Filesystem.writeFile({
+      path: 'exports/' + name,
+      data: text,
+      directory: Directory.Cache,
+      encoding: Encoding.UTF8,
+      recursive: true,
+    })
+    await Share.share({ title: name, dialogTitle: name, files: [uri] })
+    return true
+  } catch (err) {
+    const msg = String(err?.message ?? err)
+    // Closing the share sheet is the user's choice, not an error worth a toast.
+    if (!/cancel/i.test(msg)) window.dispatchEvent(new CustomEvent('fw-download-failed', { detail: { file: name, error: msg } }))
+    return false
+  }
+}
+
 export async function download(filename, text, mime = 'text/plain') {
+  if (isNative()) return shareNative(filename, text)
   if (inViewer) {
     const ext = filename.split('.').pop().toLowerCase()
     if (!viewerDl || !VIEWER_EXTS.has(ext)) {
