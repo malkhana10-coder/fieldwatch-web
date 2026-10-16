@@ -6,6 +6,10 @@ import { maskMac } from '../engine/geo.js'
 import { radioText } from '../engine/reports.js'
 import { radioColor } from './Live.jsx'
 import { SignatureEditor } from './Signatures.jsx'
+import { TrackerTag } from './Intel.jsx'
+import { trackerState, locate } from '../engine/intel.js'
+import { UA_TYPES, ID_TYPES } from '../engine/odid.js'
+import { distM } from '../engine/geo.js'
 
 export function Detail({ radioKey, onClose, onHunt }) {
   const e = useEngine()
@@ -17,6 +21,7 @@ export function Detail({ radioKey, onClose, onHunt }) {
   const named = e.named[r.key] || {}
   const fleets = r.fleetIds.map((id) => e.fleetById(id)).filter(Boolean)
   const now = Date.now()
+  const est = locate(r.samples)
   return (
     <Sheet title={<div className="row"><Glyph r={r} color={radioColor(e, r)} /><div style={{ minWidth: 0 }}><div className="ellipsis">{e.displayName(r) || (r.hidden ? t('hidden') : t('unknown'))}</div><div className="small muted mono">{maskMac(r.mac, privacy)}</div></div></div>} onClose={onClose}>
       <div className="stack">
@@ -57,11 +62,31 @@ export function Detail({ radioKey, onClose, onHunt }) {
             {r.uuids?.length > 0 && <><dt>{t('services')}</dt><dd>{r.uuids.map((u) => <div key={u} className="mono">{u.toUpperCase()}{serviceName(u) ? <span className="faint"> · {serviceName(u)}</span> : ''}</div>)}</dd></>}
             {r.mfg?.length > 0 && <><dt>{t('mfgData')}</dt><dd className="mono" style={{ fontSize: 12 }}>{r.mfg.map((m) => `0x${hex4(m.companyId)} ${m.dataHex}`).join(' · ')}</dd></>}
             {r.svcData?.length > 0 && <><dt>Service data</dt><dd className="mono" style={{ fontSize: 12 }}>{r.svcData.map((s) => `${s.uuid.toUpperCase()}: ${s.dataHex}`).join(' · ')}</dd></>}
-            <dt>{t('firstSeen')}</dt><dd>{t.time(r.firstSeen)}</dd>
+            {trackerState(r, now) && <><dt>{t('trackerState')}</dt><dd><TrackerTag ts={trackerState(r, now)} /></dd></>}
+            {r.prevMacs?.length > 0 && <><dt>{t('prevAddresses')}</dt><dd><div className="small muted">{t('rotatedHint')}</div>{r.prevMacs.slice().reverse().map((m) => <div key={m} className="mono">{maskMac(m, privacy)}</div>)}</dd></>}
+            {est && <><dt>{t('locateTitle')}</dt><dd>{t('locateEst', { r: est.radiusM, n: est.n })}{e.pos && <> · {t('droneFromYou', { d: Math.round(distM(e.pos, est)) + ' m' })}</>}</dd></>}
+            <dt>{t('firstSeen')}</dt><dd>{t.time(r.identityFirstSeen || r.firstSeen)}</dd>
             <dt>{t('count')}</dt><dd>{r.count}</dd>
             {r.positions.length > 0 && <><dt>GPS</dt><dd>{r.positions.length} {t('points')}{e.coTravel(r) && <span className="tag warn" style={{ marginInlineStart: 6 }}>{t('movingWithYou')}</span>}</dd></>}
           </dl>
         </div>
+
+        {r.drone && (
+          <div className="card card-pad">
+            <h3>{t('dronesTitle')}</h3>
+            <dl className="kv">
+              {r.drone.id && <><dt>{t('droneId')}</dt><dd className="mono">{r.drone.id} <span className="faint">{ID_TYPES[r.drone.idType] || ''}</span></dd></>}
+              {r.drone.uaType != null && <><dt>UA</dt><dd>{UA_TYPES[r.drone.uaType]}</dd></>}
+              {r.drone.status != null && <><dt>{t('droneStatus')}</dt><dd>{t('droneSt' + r.drone.status)}</dd></>}
+              {r.drone.height != null && <><dt>{t('droneHeight')}</dt><dd className="ltr">{r.drone.height} m{r.drone.altGeo != null ? ` · MSL ${r.drone.altGeo} m` : ''}</dd></>}
+              {r.drone.speed != null && <><dt>{t('droneSpeed')}</dt><dd className="ltr">{r.drone.speed} m/s{r.drone.vspeed != null ? ` · ↕ ${r.drone.vspeed} m/s` : ''}</dd></>}
+              {r.drone.direction != null && <><dt>{t('droneHeading')}</dt><dd className="ltr">{Math.round(r.drone.direction)}°</dd></>}
+              {r.drone.lat != null && <><dt>GPS</dt><dd className="mono">{privacy ? '••' : `${r.drone.lat.toFixed(5)}, ${r.drone.lon.toFixed(5)}`}</dd></>}
+              {r.drone.opLat != null && <><dt>{t('droneOperator')}</dt><dd className="mono">{privacy ? '••' : `${r.drone.opLat.toFixed(5)}, ${r.drone.opLon.toFixed(5)}`}{r.drone.lat != null && <span className="faint"> · {Math.round(distM({ lat: r.drone.lat, lon: r.drone.lon }, { lat: r.drone.opLat, lon: r.drone.opLon }))} m</span>}</dd></>}
+              {r.drone.operatorId && <><dt>{t('droneOpId')}</dt><dd className="mono">{r.drone.operatorId}</dd></>}
+            </dl>
+          </div>
+        )}
 
         {r.decoded?.length > 0 && (
           <div className="card card-pad">

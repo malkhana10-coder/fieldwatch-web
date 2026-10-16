@@ -63,6 +63,8 @@ export function Settings() {
         </Setting>
         <Setting title={t('floodDetect')}><Switch checked={s.floodDetect} onChange={(v) => e.set({ floodDetect: v })} /></Setting>
         <Setting title={t('sentinel')} hint={t('sentinelHint')}><Switch checked={s.sentinel} onChange={(v) => e.set({ sentinel: v })} /></Setting>
+        {s.sentinel && <Setting title={t('sentinelNewOnly')} hint={t('sentinelNewOnlyHint')}><Switch checked={s.sentinelNewOnly} onChange={(v) => e.set({ sentinelNewOnly: v })} /></Setting>}
+        <Setting title={t('trackerAlerts')} hint={t('trackerAlertsHint')}><Switch checked={s.trackerAlerts} onChange={(v) => e.set({ trackerAlerts: v })} /></Setting>
       </div>
 
       <div className="section-title">{t('watchedNets')}</div>
@@ -118,12 +120,41 @@ export function Settings() {
           <div style={{ flex: '1 0 100%' }}>{t('scanIntensity')}</div>
           <Seg value={s.density} onChange={(v) => e.set({ density: v })} options={[{ value: 'SAVER', label: t('saver') }, { value: 'BALANCED', label: t('balanced') }, { value: 'PERFORMANCE', label: t('performance') }]} />
         </div>
+        <div className="setting" style={{ flexWrap: 'wrap' }}>
+          <div style={{ flex: '1 0 100%' }}>
+            <div>{t('bridgeUrl')}</div>
+            <div className="small muted">{t('bridgeUrlHint')}</div>
+          </div>
+          <input className="input" type="password" dir="ltr" value={s.bridgeUrl || ''} placeholder="ws://127.0.0.1:8765/?token=…" autoComplete="off" onChange={(ev) => e.set({ bridgeUrl: ev.target.value.trim() })} />
+          {e.bridgeState && <div className="small" style={{ flex: '1 0 100%' }}>
+            <span className={'tag ' + (e.bridgeState === 'open' ? 'ok' : e.bridgeState === 'denied' || e.bridgeState === 'error' ? 'attn' : '')}>{t('bridge_' + e.bridgeState)}</span>
+            {e.bridgeInfo && <span className="faint"> · {e.bridgeInfo.platform} · Wi-Fi {e.bridgeInfo.caps.wifi ? '✓' : '✗'} · BLE {e.bridgeInfo.caps.ble ? '✓' : '✗'}</span>}
+          </div>}
+        </div>
         <Setting title={t('sourceReplay')} hint={t('sourceReplayHint')}>
           <button className="btn sm" onClick={async () => {
             const f = await pickFile('.csv,.jsonl,.json,.txt')
             if (!f) return
             try { e.loadReplay(f.text); e.set({ source: 'replay' }) } catch (err) { e.toast(t('importFailed', { e: err.message }), 'warn') }
           }}><Icon name="upload" size={14} />{t('pickLog')}</button>
+        </Setting>
+      </div>
+
+      <div className="section-title">{t('aiSection')}</div>
+      <div className="card">
+        <div className="setting" style={{ flexWrap: 'wrap' }}>
+          <div style={{ flex: '1 0 100%' }}>
+            <div>{t('aiKey')}</div>
+            <div className="small muted">{t('aiKeyHint')}</div>
+          </div>
+          <input className="input" type="password" dir="ltr" value={s.aiKey || ''} placeholder="sk-ant-…" autoComplete="off" onChange={(ev) => e.set({ aiKey: ev.target.value.trim() })} />
+        </div>
+      </div>
+
+      <div className="section-title">{t('placeTitle')}</div>
+      <div className="card">
+        <Setting title={t('forgetPlaces')} hint={t('forgetPlacesHint', { n: Object.keys(e.mem.devices).length })}>
+          <ConfirmButton className="btn sm danger" confirmLabel={t('tapConfirm')} onConfirm={() => e.forgetPlaces()}><Icon name="trash" size={14} />{t('forgetPlaces')}</ConfirmButton>
         </Setting>
       </div>
 
@@ -157,7 +188,7 @@ export function Settings() {
 
       <div className="section-title">{t('about')}</div>
       <div className="card card-pad stack small">
-        <div><b>{t('appName')} Web</b> · {t('version')} 1.2.0 · {t('unofficial')}</div>
+        <div><b>{t('appName')} Web</b> · {t('version')} 1.3.0 · {t('unofficial')}</div>
         <div className="muted">{t('disclaimer')}</div>
         <div className="muted">{t('disclaimerPort')}</div>
         <div className="muted" dir="ltr" style={{ textAlign: 'start' }}>Fieldwatch © 2026 Off Grid Pete LLC — MIT License. IEEE and Bluetooth SIG assigned-number tables are subject to those organizations' terms.</div>

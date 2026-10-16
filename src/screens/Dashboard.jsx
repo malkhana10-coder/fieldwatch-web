@@ -2,6 +2,8 @@ import { useEngine, Icon, Glyph, Bars, ago, CLASS_ICON } from '../ui.jsx'
 import { radioColor } from './Live.jsx'
 import { CLASSES } from '../i18n.js'
 import { maskMac } from '../engine/geo.js'
+import { TrackersCard, PlaceCard, MultiPlaceCard, DronesCard, AiPanel } from './Intel.jsx'
+import { livePrompt } from '../engine/ai.js'
 
 function Bar({ label, n, max, color }) {
   return (
@@ -79,6 +81,9 @@ export function Dashboard({ onOpen }) {
             <div className="stat attn"><b>{attnList.length}</b><span>{t('attention')}</span></div>
             <div className="stat"><b>{t.num(e.stats.packets)}</b><span>{t('dashPackets')}</span></div>
           </div>
+
+          <TrackersCard onOpen={onOpen} />
+          <DronesCard onOpen={onOpen} />
 
           <div className="grid-2">
             <div className="card card-pad">
@@ -174,6 +179,13 @@ export function Dashboard({ onOpen }) {
               </button>
             )) : <span className="faint small">—</span>}
           </div>
+
+          <div className="grid-2">
+            <PlaceCard onOpen={onOpen} />
+            <MultiPlaceCard onOpen={onOpen} />
+          </div>
+
+          <AiPanel getPrompt={() => livePrompt(e)} />
 
           {(sit || radios.length > 0) && (
             <div className="tiny faint" style={{ textAlign: 'center' }}>

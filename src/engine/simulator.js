@@ -2,6 +2,8 @@
 // demo source synthesizes radios that satisfy real catalog rules. Every emitted
 // sighting goes through the same matcher, decoder, filters, sits and alerts as a
 // real one would.
+import { encodeBasicId, encodeLocation, encodeSystem, encodeOperatorId, wrapAdvert } from './odid.js'
+import { distM } from './geo.js'
 
 const rnd = (a, b) => a + Math.random() * (b - a)
 const pick = (arr) => arr[Math.floor(Math.random() * arr.length)]
@@ -57,14 +59,44 @@ function radioFromFleet(f) {
   return d
 }
 
-function remoteIdRadio() {
-  const serial = ('1581F' + hexBytes(6)).slice(0, 16)
-  const ser = [...serial.padEnd(20, '\0')].map((c) => c.charCodeAt(0).toString(16).padStart(2, '0')).join('').toUpperCase()
+const offset = (pos, northM, eastM) => ({
+  lat: pos.lat + northM / 111320,
+  lon: pos.lon + eastM / (111320 * Math.cos((pos.lat * Math.PI) / 180)),
+})
+
+/**
+ * A Remote ID drone flying circles near the observer. Like a real broadcaster it
+ * cycles Basic ID, Location, System (operator position) and Operator ID messages,
+ * one per advertisement, all encoded with the same codec the decoder uses.
+ */
+function droneRadio(observer) {
+  const center = offset(observer, rnd(-300, 300), rnd(-300, 300))
   return {
-    kind: 'BLE', mac: randomMac(), name: '', mfg: [], uuids: ['FFFA'], vendorIe: [],
-    svcData: [{ uuid: 'FFFA', dataHex: '0D' + hexBytes(1) + '02' + '12' + ser + '000000' }],
-    special: 'drone',
+    kind: 'BLE', mac: randomMac(), name: '', mfg: [], uuids: ['FFFA'], vendorIe: [], svcData: [],
+    drone: {
+      serial: ('1581F' + hexBytes(6)).slice(0, 16), op: 'SAU' + hexBytes(6).toLowerCase(),
+      center, operator: offset(center, rnd(-60, 60), rnd(-60, 60)), radius: rnd(60, 180),
+      alt: rnd(40, 120), speed: rnd(6, 15), angle: rnd(0, Math.PI * 2), counter: 0, step: 0,
+    },
+    tx: -50,
   }
+}
+
+function droneAdvert(d, dt) {
+  const f = d.drone
+  f.angle += (f.speed * dt) / f.radius
+  const pos = offset(f.center, Math.cos(f.angle) * f.radius, Math.sin(f.angle) * f.radius)
+  d.geo = pos
+  const kind = ['basic', 'location', 'system', 'location', 'operator'][f.step++ % 5]
+  const msg = kind === 'basic' ? encodeBasicId({ idType: 1, uaType: 2, id: f.serial })
+    : kind === 'system' ? encodeSystem({ opLat: f.operator.lat, opLon: f.operator.lon, opAlt: 610, areaCount: 1, areaRadius: 0, operatorLocationType: 1, timestamp: Math.floor((Date.now() - Date.UTC(2019, 0, 1)) / 1000) })
+      : kind === 'operator' ? encodeOperatorId({ id: f.op })
+        : encodeLocation({
+          status: 2, direction: ((((f.angle + Math.PI / 2) * 180) / Math.PI) % 360 + 360) % 360, speed: f.speed, vspeed: rnd(-0.5, 0.5),
+          lat: pos.lat, lon: pos.lon, altGeo: 610 + f.alt, altBaro: 610 + f.alt, height: f.alt, heightType: 1, timestamp: (Date.now() / 1000) % 3600,
+        })
+  f.counter = (f.counter + 1) % 256
+  return [{ uuid: 'FFFA', dataHex: wrapAdvert(f.counter, msg) }]
 }
 
 function backgroundRadio() {
@@ -99,7 +131,7 @@ export class Simulator {
     const fleets = this.getFleets().filter((f) => f.enabled)
     let d
     const roll = Math.random()
-    if (roll < 0.03) d = remoteIdRadio()
+    if (roll < 0.02) d = droneRadio(this.pos)
     else if (roll < 0.5 && fleets.length) {
       // Weight toward interesting classes so the demo shows variety.
       const interesting = fleets.filter((f) => f.attentionNote || ['FINDER', 'DRONE', 'GLASSES', 'WEARABLE', 'VEHICLE', 'AUDIO'].includes(f.kind))
@@ -108,7 +140,15 @@ export class Simulator {
     }
     if (!d) d = backgroundRadio()
     d.baseRssi = rnd(-95, -42)
-    d.life = rnd(8, 120)
+    d.life = d.drone ? rnd(120, 300) : rnd(8, 120)
+    // Most radios sit somewhere fixed around the observer, so their signal follows
+    // distance as you walk (and Locate can find them); the rest drift randomly.
+    if (!d.drone && Math.random() < 0.75) {
+      const far = d.kind === 'WIFI' ? rnd(10, 110) : rnd(3, 40)
+      const a = rnd(0, Math.PI * 2)
+      d.geo = offset(this.pos, Math.cos(a) * far, Math.sin(a) * far)
+      d.tx = d.kind === 'WIFI' ? rnd(-38, -30) : rnd(-62, -52)
+    }
     d.age = 0
     d.drift = rnd(-0.4, 0.4)
     d.channel = d.kind === 'WIFI' ? pick(WIFI_CH) : 0
@@ -124,7 +164,11 @@ export class Simulator {
     const tile = { kind: 'BLE', mac: randomMac(), name: '', mfg: [], uuids: ['FEED'], svcData: [{ uuid: 'FEED', dataHex: '02' + hexBytes(8) }], vendorIe: [] }
     const watch = { kind: 'BLE', mac: randomMac(), name: 'Galaxy Watch6', mfg: [{ companyId: 117, dataHex: '0142' + hexBytes(6) }], uuids: [], svcData: [], vendorIe: [] }
     const hotspot = { kind: 'WIFI', mac: macFrom('A2' + hexBytes(2)), name: 'iPhone', mfg: [], uuids: [], svcData: [], vendorIe: [], channel: 6, freq: 2437, security: 'WPA2-PSK' }
-    this._companions = [tile, watch, hotspot].map((d) => ({ ...d, baseRssi: rnd(-62, -48), life: Infinity, age: 0, drift: 0, channel: d.channel || 0, freq: d.freq || 2402, security: d.security || '', companion: true }))
+    // An AirTag away from its owner: full Find My "offline finding" advert (type 0x12, length 0x19).
+    const airtag = { kind: 'BLE', mac: randomMac(), name: '', mfg: [{ companyId: 76, dataHex: '1219' + '10' + hexBytes(22) + '01' + hexBytes(1) }], uuids: [], svcData: [], vendorIe: [] }
+    // A SmartTag that rotates its random address (sped up from ~15 min to 90 s for the demo).
+    const smarttag = { kind: 'BLE', mac: randomMac(), name: '', mfg: [], uuids: [], svcData: [{ uuid: 'FD5A', dataHex: '42' + hexBytes(12) }], vendorIe: [], rotateEvery: 90 }
+    this._companions = [tile, watch, hotspot, airtag, smarttag].map((d) => ({ ...d, baseRssi: rnd(-62, -48), life: Infinity, age: 0, drift: 0, channel: d.channel || 0, freq: d.freq || 2402, security: d.security || '', companion: true }))
     return this._companions
   }
 
@@ -154,11 +198,25 @@ export class Simulator {
     }
     const out = []
     for (const d of [...this.pool, ...this.companions()]) {
+      if (d.rotateEvery && this.t % d.rotateEvery < dt) {
+        d.mac = randomMac()
+        if (d.svcData[0]) d.svcData = [{ uuid: d.svcData[0].uuid, dataHex: d.svcData[0].dataHex.slice(0, 2) + hexBytes(12) }]
+        continue // silent for one tick while it changes address
+      }
+      if (d.drone) d.svcData = droneAdvert(d, dt)
       // Wi-Fi APs are scanned roughly every few seconds; BLE advertises constantly.
       if (d.kind === 'WIFI' && Math.random() < 0.55 && !d.companion) continue
       if (d.kind === 'BLE' && Math.random() < 0.15) continue
-      d.baseRssi = Math.max(-100, Math.min(-30, d.baseRssi + d.drift + rnd(-1.2, 1.2)))
-      const rssi = Math.round(d.baseRssi + rnd(-4, 4))
+      let rssi
+      if (d.geo && !d.drone) {
+        rssi = Math.round(d.tx - 25 * Math.log10(Math.max(1, distM(this.pos, d.geo))) + rnd(-3, 3))
+        if (rssi < -100) continue
+      } else if (d.drone) {
+        rssi = Math.round(Math.max(-99, -45 - 20 * Math.log10(Math.max(1, distM(this.pos, d.geo) + d.drone.alt))) + rnd(-3, 3))
+      } else {
+        d.baseRssi = Math.max(-100, Math.min(-30, d.baseRssi + d.drift + rnd(-1.2, 1.2)))
+        rssi = Math.round(d.baseRssi + rnd(-4, 4))
+      }
       out.push({
         kind: d.kind, mac: d.mac, name: d.name, hidden: !!d.hidden, rssi,
         channel: d.channel, freq: d.freq, security: d.security,

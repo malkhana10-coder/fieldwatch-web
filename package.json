@@ -1,7 +1,7 @@
 {
   "name": "fieldwatch-web",
   "private": true,
-  "version": "1.2.0",
+  "version": "1.3.0",
   "type": "module",
   "description": "Unofficial bilingual (Arabic/English) web port of Fieldwatch — passive Wi-Fi / BLE field watcher.",
   "license": "MIT",
@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.135.0",
     "leaflet": "^1.9.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"

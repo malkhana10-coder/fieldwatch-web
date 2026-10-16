@@ -4,6 +4,8 @@ import { PALETTE } from '../engine/catalog.js'
 import { maskMac } from '../engine/geo.js'
 import { CLASSES } from '../i18n.js'
 import { Filters } from './Filters.jsx'
+import { useLeaflet } from '../leaflet.jsx'
+import { trackerState } from '../engine/intel.js'
 
 export function radioColor(engine, r) {
   if (r.attention) return 'var(--danger)'
@@ -19,6 +21,7 @@ export function SourcePicker() {
       onChange={(ev) => e.set({ source: ev.target.value })} aria-label={t('source')}>
       <option value="demo">{t('sourceDemo')}</option>
       <option value="ble">{t('sourceBle')}</option>
+      <option value="bridge">{t('sourceBridge')}</option>
       <option value="replay">{t('sourceReplay')}</option>
     </select>
   )
@@ -42,6 +45,9 @@ function RadioRow({ r, onOpen, now }) {
           {named?.mine && <span className="tag ok">{t('mine')}</span>}
           {e.watchedNetFor(r) && <span className="tag info">{t('watchedTag')}</span>}
           {e.coTravel(r) && !named?.mine && <span className="tag warn">{t('movingWithYou')}</span>}
+          {trackerState(r, now)?.separated && <span className="tag attn">{t('tagSeparated')}</span>}
+          {r.prevMacs?.length > 0 && <span className="tag" title={t('rotatedHint')}>↻ {r.prevMacs.length}</span>}
+          {r.drone?.height != null && <span className="tag info ltr">{r.drone.height} m</span>}
         </div>
         <div className="radio-meta">
           <span className={'tag ' + (r.kind === 'WIFI' ? 'wifi' : 'ble')}>{r.kind === 'WIFI' ? 'Wi-Fi' : 'BLE'}</span>
@@ -210,16 +216,7 @@ function MapView({ radios, onOpen }) {
   const layer = useRef(null)
   const fitted = useRef(false)
 
-  // Leaflet is bundled and loaded on first use, so the app shell works offline
-  // (only the OpenStreetMap tiles need the network).
-  const [L, setL] = useState(null)
-  useEffect(() => {
-    let live = true
-    Promise.all([import('leaflet'), import('leaflet/dist/leaflet.css')])
-      .then(([mod]) => { if (live) setL(mod.default || mod) })
-      .catch(() => { /* offline before first load: the map card stays empty */ })
-    return () => { live = false }
-  }, [])
+  const L = useLeaflet()
 
   const hasData = radios.some((r) => r.positions.length) || (e.activeSit()?.path?.length >= 2) || !!e.pos
 
@@ -342,7 +339,7 @@ export function Live({ onOpen }) {
           <Icon name={e.running ? 'radar' : 'wifi'} size={40} />
           <div>{all.length ? t('noMatchFilters') : t('noRadios')}</div>
           <div className="small faint" style={{ marginTop: 6, maxWidth: 460, marginInline: 'auto' }}>
-            {e.settings.source === 'demo' ? t('sourceDemoHint') : e.settings.source === 'ble' ? t('sourceBleHint') : t('sourceReplayHint')}
+            {e.settings.source === 'demo' ? t('sourceDemoHint') : e.settings.source === 'ble' ? t('sourceBleHint') : e.settings.source === 'bridge' ? t('sourceBridgeHint') : t('sourceReplayHint')}
           </div>
           {all.length > 0 && <button className="btn" style={{ marginTop: 12 }} onClick={() => e.resetFilters()}>{t('clearFilters')}</button>}
         </div>

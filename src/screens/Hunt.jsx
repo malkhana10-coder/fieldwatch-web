@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useEngine, Icon, Glyph, Sparkline, Switch } from '../ui.jsx'
 import { maskMac } from '../engine/geo.js'
 import { radioColor } from './Live.jsx'
+import { LocateCard } from './Intel.jsx'
 
 export function Hunt() {
   const e = useEngine()
@@ -89,6 +90,7 @@ export function Hunt() {
           <Sparkline data={r.history.slice(-90)} width={320} height={60} color={radioColor(e, r) || 'var(--accent)'} />
         </div>
       </div>
+      <LocateCard r={r} />
       <div className="card">
         <div className="setting">
           <div className="grow">{t('huntTone')}</div>

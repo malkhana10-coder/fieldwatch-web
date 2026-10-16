@@ -18,20 +18,34 @@ A bilingual (العربية / English) web port of [Fieldwatch](https://github.c
 - **Language and theme:** Arabic (RTL) and English, with System, Light, Dark and Night (red) themes. Privacy mode masks MAC tails and coordinates.
 - **PWA:** the app is installable and works offline. Settings can be exported and imported.
 
+## Field intelligence (v1.3)
+
+- **Rotating addresses.** Phones and trackers change their random BLE address every few minutes. The engine links the new address to the one that just went quiet when the advert fingerprint (name, services, manufacturer and payload type) and signal strength match and the match is unambiguous. "Moving with you" and Mine then follow the device across rotations.
+- **Trackers away from their owner.** Apple Find My items broadcast a different advert when separated from their owner. Any tracker that keeps one address for over 30 minutes is flagged the same way. If one also travels with you, you get an alert (sound, vibration, voice, notification, Telegram).
+- **Places.** The app remembers which devices it heard in each ~330 m area and on which days. "This place" shows familiar versus new devices, and "Learn this place" marks what is around you as familiar. Sentinel can stay quiet for familiar devices. "Seen in several places" lists devices heard in places at least 1 km apart, across sessions.
+- **Locate.** In Hunt, readings taken while walking are fitted to a path-loss model to estimate where the device is, with an honest ± radius, drawn on the map. This works outdoors and in large spaces. Indoors, use the warmer/colder gauge.
+- **Drones.** Remote ID (ASTM F3411 / Open Drone ID) adverts are fully decoded: serial, aircraft type, status, position, height, speed, heading, operator position and ID. They are shown on a live map with the flight track.
+- **Claude analysis.** "Analyze now" (Home) and "Analyze this sit" (Reports) stream a written report from Claude (`claude-opus-5-5`) using your own Anthropic API key. Only a text summary is sent: no coordinates, and MACs are masked in privacy mode.
+- **Real data via the bridge.** See below.
+
+The Telegram bot, the bridge URL and the Anthropic API key stay on the device. They are never exported, and imports can't set them.
+
 ## Sources
 
-Browsers cannot see Wi-Fi networks, and most cannot scan BLE. The app has three sources:
+Browsers cannot see Wi-Fi networks, and most cannot scan BLE. The app has four sources:
 
 1. **Field simulator.** Synthetic radios built from real catalog rules. Every sighting goes through the real engine.
 2. **Web Bluetooth scan.** Real BLE advertisements through `navigator.bluetooth.requestLEScan`. This needs Chrome with experimental web platform features turned on.
-3. **Log replay.** A Fieldwatch CSV or JSONL log.
+3. **Bridge.** Real Wi-Fi and BLE from `bridge/fieldwatch_bridge.py`. The bridge runs on a laptop (Linux, Windows, macOS), a Raspberry Pi, or Android under Termux, and streams to the app over a local WebSocket protected by a token. See [bridge/README.md](bridge/README.md).
+4. **Log replay.** A Fieldwatch CSV or JSONL log.
 
 ## Develop
 
 ```bash
 npm ci
 npm run dev      # local dev server
-npm test         # engine unit tests
+npm test         # engine, intel, Remote ID and bridge-protocol unit tests
+python3 -m unittest bridge/test_bridge.py   # bridge parsers
 npm run build    # production build in dist/
 ```
 

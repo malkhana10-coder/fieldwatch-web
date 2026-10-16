@@ -315,3 +315,8 @@ pre.prompt { white-space: pre-wrap; background: var(--surface-2); border-radius:
   .report-head { padding: 8px 0 16px; border-bottom: 2px solid #000; margin-bottom: 12px; }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* intelligence cards (v1.3) */
+.ai-text { margin-top: 10px; white-space: pre-wrap; line-height: 1.7; font-size: 14px; padding: 12px; border-radius: var(--radius); background: var(--surface-2); max-height: 60vh; overflow: auto; }
+.geomap { width: 100%; background: var(--surface-2); }
+.sig:disabled { cursor: default; opacity: 1; }

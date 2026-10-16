@@ -228,3 +228,132 @@ describe('detectors', () => {
     expect(out.some((x) => x.why === 'hiddenRand')).toBe(true)
   })
 })
+
+import { parseBridgeMessage, sanitizeSighting, validBridgeUrl } from '../src/engine/bridge.js'
+import { buildRequest, livePrompt, AI_MODEL } from '../src/engine/ai.js'
+import { encodeLocation, encodeSystem, wrapAdvert } from '../src/engine/odid.js'
+
+describe('bridge messages', () => {
+  it('accepts well-formed sightings and drops malformed ones', () => {
+    const m = parseBridgeMessage(JSON.stringify({ type: 'sightings', items: [
+      { kind: 'WIFI', mac: 'aa:bb:cc:dd:ee:ff', name: 'Cafe', rssi: -60.4, channel: 6, freq: 2437, security: 'WPA2-PSK' },
+      { kind: 'BLE', mac: 'C2:00:00:00:00:01', rssi: -70, mfg: [{ companyId: 76, dataHex: '12zz' }, { companyId: 6, dataHex: '0109' }], svcData: [{ uuid: 'FFFA', dataHex: '0d01' }] },
+      { kind: 'ZIGBEE', mac: 'AA:BB:CC:DD:EE:FF' }, { kind: 'BLE', mac: 'nope' }, null,
+    ] }))
+    expect(m.items.length).toBe(2)
+    expect(m.items[0]).toMatchObject({ kind: 'WIFI', mac: 'AA:BB:CC:DD:EE:FF', rssi: -60, channel: 6 })
+    expect(m.items[1].mfg).toEqual([{ companyId: 76, dataHex: '' }, { companyId: 6, dataHex: '0109' }])
+    expect(m.items[1].svcData).toEqual([{ uuid: 'FFFA', dataHex: '0D01' }])
+    expect(parseBridgeMessage('{"type":"hello","agent":"fieldwatch-bridge","version":1,"caps":{"wifi":true,"ble":false},"platform":"linux"}')).toMatchObject({ type: 'hello', caps: { wifi: true, ble: false } })
+    expect(parseBridgeMessage('not json')).toBe(null)
+    expect(parseBridgeMessage('{"type":"exec","cmd":"x"}')).toBe(null)
+    expect(sanitizeSighting({ kind: 'BLE', mac: 'C2:00:00:00:00:01', rssi: 'loud' }).rssi).toBe(-100)
+    expect(validBridgeUrl('ws://127.0.0.1:8765/?token=abc')).toBe(true)
+    expect(validBridgeUrl('http://127.0.0.1:8765')).toBe(false)
+  })
+})
+
+describe('engine intelligence', () => {
+  const reset = () => { engine.radios.clear(); engine.trackerAlerted.clear() }
+  it('follows a tracker across an address rotation and keeps its trail', () => {
+    reset()
+    const t0 = Date.now()
+    const tag = (mac) => ({ kind: 'BLE', mac, name: '', rssi: -55, svcData: [{ uuid: 'FD5A', dataHex: '42AABB' }], mfg: [], uuids: [] })
+    engine.pos = { lat: 24.7, lon: 46.6 }
+    engine.ingest([tag('C2:11:11:11:11:01')], t0)
+    engine.pos = { lat: 24.71, lon: 46.61 }
+    engine.ingest([tag('C2:11:11:11:11:01')], t0 + 60000)
+    engine.ingest([tag('C2:11:11:11:11:02')], t0 + 62000)
+    engine.ingest([tag('C2:11:11:11:11:02')], t0 + 66000)
+    engine.linkRotations(t0 + 66000)
+    const r = engine.radios.get('BLE:C2:11:11:11:11:02')
+    expect(r.prevMacs).toEqual(['C2:11:11:11:11:01'])
+    expect(r.identityFirstSeen).toBe(t0)
+    expect(r.positions.map((p) => p.lat)).toEqual([24.7, 24.71, 24.71]) // old trail + the new address's first fix
+    engine.pos = null
+    reset()
+  })
+  it('decodes Remote ID adverts into a live drone with operator position', () => {
+    reset()
+    const now = Date.now()
+    const mac = 'C2:22:22:22:22:22'
+    const adv = (bytes, c) => ({ kind: 'BLE', mac, rssi: -80, svcData: [{ uuid: 'FFFA', dataHex: wrapAdvert(c, bytes) }] })
+    engine.ingest([adv(encodeLocation({ status: 2, lat: 24.71, lon: 46.67, height: 80, altGeo: 690, speed: 10, direction: 90 }), 1)], now)
+    engine.ingest([adv(encodeSystem({ opLat: 24.709, opLon: 46.669, operatorLocationType: 1 }), 2)], now + 100)
+    const [d] = engine.drones(now + 200)
+    expect(d.drone.lat).toBeCloseTo(24.71, 5)
+    expect(d.drone.height).toBe(80)
+    expect(d.drone.opLat).toBeCloseTo(24.709, 5)
+    reset()
+  })
+  it('alerts once when a separated AirTag travels with you', () => {
+    reset()
+    const before = { ...engine.settings }
+    Object.assign(engine.settings, { trackerAlerts: true, sound: false, vibrate: false, voice: false, notify: false, tgEnabled: false })
+    const now = Date.now()
+    const r = { key: 'BLE:C2:33:33:33:33:33', kind: 'BLE', mac: 'C2:33:33:33:33:33', name: '', rssi: -50, lastSeen: now, firstSeen: now - 10 * 60000,
+      mfg: [{ companyId: 76, dataHex: '1219' + '10' + 'AB'.repeat(24) }], svcData: [], uuids: [], fleetIds: [], randomized: true, cls: 'FINDER',
+      positions: [{ lat: 24.7, lon: 46.6 }, { lat: 24.702, lon: 46.6 }, { lat: 24.705, lon: 46.6 }], history: [] }
+    engine.radios.set(r.key, r)
+    const toasts = engine.toasts.length
+    engine.checkTrackers(now)
+    engine.checkTrackers(now + 5000)
+    expect(engine.toasts.filter((x) => x.kind === 'alert').length).toBe(1)
+    expect(engine.toasts.length).toBeGreaterThan(toasts - 1)
+    expect(engine.trackingAssessment(now).reasons[0].why).toBe('whySeparated')
+    engine.settings = before
+    reset()
+  })
+  it('sentinel "new here only" stays quiet for learned devices and random phones', () => {
+    reset()
+    const before = { ...engine.settings }
+    Object.assign(engine.settings, { sentinel: true, sentinelNewOnly: true, tgEnabled: false })
+    engine.pos = null
+    const now = Date.now()
+    const ap = { kind: 'WIFI', mac: 'F4:F2:6D:00:00:01', name: 'Majlis', rssi: -50 }
+    engine.ingest([ap], now)
+    engine.learnPlace(now)
+    engine.radios.clear()
+    const n0 = engine.toasts.filter((x) => x.text.includes('Majlis')).length
+    engine.ingest([ap], now + 1000)
+    engine.ingest([{ kind: 'BLE', mac: 'C2:44:44:44:44:44', name: '', rssi: -60, mfg: [{ companyId: 76, dataHex: '1005AA' }] }], now + 1000)
+    expect(engine.toasts.filter((x) => x.text.includes('Majlis')).length).toBe(n0)
+    engine.ingest([{ kind: 'WIFI', mac: 'F4:F2:6D:00:00:02', name: 'Stranger', rssi: -50 }], now + 2000)
+    expect(engine.toasts.some((x) => x.text.includes('Stranger'))).toBe(true)
+    engine.forgetPlaces()
+    engine.settings = before
+    reset()
+  })
+  it('keeps the bridge URL and API key out of exports', () => {
+    const before = { ...engine.settings }
+    Object.assign(engine.settings, { bridgeUrl: 'ws://127.0.0.1:8765/?token=SECRETTOKEN', aiKey: 'sk-ant-SECRETKEY' })
+    for (const text of [engine.exportSettings(), engine.exportAll()]) {
+      expect(text).not.toContain('SECRETTOKEN')
+      expect(text).not.toContain('SECRETKEY')
+    }
+    engine.settings = before
+  })
+})
+
+describe('AI analysis request', () => {
+  it('uses the current model with server-side fallback and answers in the UI language', () => {
+    const req = buildRequest('hello', 'ar')
+    expect(req.model).toBe(AI_MODEL)
+    expect(req.fallbacks).toBe('default')
+    expect(req.betas).toContain('server-side-fallback-2026-07-01')
+    expect(req.system).toContain('Arabic')
+    expect(req.messages).toEqual([{ role: 'user', content: 'hello' }])
+  })
+  it('live summary never includes coordinates', () => {
+    engine.radios.clear()
+    engine.pos = { lat: 24.123456, lon: 46.654321 }
+    engine.ingest([{ kind: 'WIFI', mac: 'F4:F2:6D:00:00:09', name: 'Cafe', rssi: -50 }], Date.now())
+    const p = livePrompt(engine)
+    expect(p).toContain('Radios: 1')
+    expect(p).not.toContain('24.12')
+    expect(p).not.toContain('46.65')
+    engine.pos = null
+    engine.radios.clear()
+    engine.forgetPlaces()
+  })
+})

@@ -6,6 +6,9 @@ import { loadRadioDb, ouiVendor, companyName } from './lookup.js'
 import { Simulator } from './simulator.js'
 import { ls, idb } from './storage.js'
 import { distM, maskMac } from './geo.js'
+import { findPredecessor, linkRadios, trackerState, PlaceMemory, cellOf, memoryKey, addSample, NO_PLACE } from './intel.js'
+import { decodeAdvert, mergeDrone } from './odid.js'
+import { parseBridgeMessage, validBridgeUrl } from './bridge.js'
 import { makeT } from '../i18n.js'
 
 const DEFAULT_FILTERS = { radio: 'BOTH', minRssi: -100, onlyMatched: false, onlyAttention: false, hideMine: false, hideRandom: false, classes: [], maxAge: 60, q: '' }
@@ -24,15 +27,17 @@ function defaultSettings() {
   return {
     lang, theme: 'system', privacy: false, sound: true, vibrate: true, voice: false, notify: false, cooldown: 60,
     location: false, density: 'BALANCED', floodDetect: true, source: 'demo', view: 'LIST', sort: 'STRENGTH',
-    tgEnabled: false, tgToken: '', tgChatId: '', watchedNets: [], sentinel: false,
+    tgEnabled: false, tgToken: '', tgChatId: '', watchedNets: [], sentinel: false, sentinelNewOnly: true,
+    trackerAlerts: true, bridgeUrl: '', aiKey: '',
     accepted: false, filters: { ...DEFAULT_FILTERS }, presets: [],
   }
 }
 
 const LOG_CAP = 6000
-// Telegram credentials never leave this device: they are stripped from every
-// export and ignored on every import.
-const DEVICE_ONLY_SETTINGS = ['tgEnabled', 'tgToken', 'tgChatId']
+// Credentials never leave this device: the Telegram bot, the bridge URL (it
+// carries the bridge's access token) and the Anthropic API key are stripped from
+// every export and ignored on every import.
+const DEVICE_ONLY_SETTINGS = ['tgEnabled', 'tgToken', 'tgChatId', 'bridgeUrl', 'aiKey']
 const TG_MIN_GAP_MS = 5000
 const TG_QUEUE_CAP = 20
 const HISTORY_CAP = 180
@@ -74,6 +79,12 @@ class Engine {
     this.tgDropped = 0
     this.tgTimer = null
     this.tgNextAt = 0
+    this.mem = new PlaceMemory()
+    this.trackerAlerted = new Set()
+    this.bridge = null
+    this.bridgeQueue = []
+    this.bridgeState = null
+    this.bridgeInfo = null
     this.t = makeT(this.settings.lang)
     if (typeof window !== 'undefined') {
       window.addEventListener('fw-download-unavailable', (ev) => this.toast(this.t('downloadUnavailable', { ext: ev.detail.toUpperCase() }), 'warn'))
@@ -108,6 +119,7 @@ class Engine {
     this.compiled = compileCatalog(this.fleets)
     this.log = (await idb.get('log')) || []
     this.sits = (await idb.get('sits')) || []
+    this.mem = new PlaceMemory(await idb.get('places'))
     const open = this.sits.find((s) => !s.end)
     if (open) this.activeSitId = open.id
     this.ready = true
@@ -165,7 +177,7 @@ class Engine {
     return clean.length
   }
   exportSignatures() {
-    return JSON.stringify({ format: 'fieldwatch-signatures', formatVersion: 1, exportedAt: new Date().toISOString(), appVersion: 'web-1.2.0', catalogVersion: this.catalogVersion, fleets: this.fleets }, null, 1)
+    return JSON.stringify({ format: 'fieldwatch-signatures', formatVersion: 1, exportedAt: new Date().toISOString(), appVersion: 'web-1.3.0', catalogVersion: this.catalogVersion, fleets: this.fleets }, null, 1)
   }
 
   // ---------- named radios ----------
@@ -190,6 +202,7 @@ class Engine {
 
   ingest(batch, now = Date.now()) {
     const pos = this.pos
+    const cell = cellOf(pos)
     const sit = this.activeSit()
     for (const s of batch) {
       const mac = normMac(s.mac)
@@ -210,6 +223,11 @@ class Engine {
         svcData: s.svcData?.length ? s.svcData : r.svcData || [], vendorIe: s.vendorIe?.length ? s.vendorIe : r.vendorIe || [],
       })
       r.company = r.mfg[0] ? companyName(r.mfg[0].companyId) : null
+      if (r.kind === 'BLE' && s.svcData?.length) {
+        const odid = s.svcData.find((x) => isOdidUuid(x.uuid))
+        const msgs = odid ? decodeAdvert(odid.dataHex) : []
+        if (msgs.length) r.drone = mergeDrone(r.drone, msgs, now)
+      }
       r.count++
       r.history.push([now, s.rssi])
       if (r.history.length > HISTORY_CAP) r.history.shift()
@@ -217,7 +235,9 @@ class Engine {
       if (pos) {
         const last = r.positions[r.positions.length - 1]
         if (!last || distM(last, pos) > 15) { r.positions.push({ lat: pos.lat, lon: pos.lon, t: now }); if (r.positions.length > 40) r.positions.shift() }
+        addSample(r, pos, now)
       }
+      this.mem.observe(r, cell, now)
       this.stats.packets++
       this.logRow(r, now)
       if (sit) this.sitRecord(sit, r, now)
@@ -289,12 +309,15 @@ class Engine {
   coTravel(r, minM = 200, minMs = 3 * 60 * 1000) {
     if (r.positions.length < 3) return false
     const first = r.positions[0]
-    return r.positions.some((p) => distM(first, p) > minM) && r.lastSeen - r.firstSeen > minMs
+    return r.positions.some((p) => distM(first, p) > minM) && r.lastSeen - (r.identityFirstSeen || r.firstSeen) > minMs
   }
 
   /** Sentinel mode: announce any brand-new device. */
   sentinelAlert(r) {
     if (this.isMine(r) || this.hiddenKeys.has(r.key)) return
+    // "New here only": skip devices this place already knows, and random phone
+    // addresses that can never be recognised again (they would alert constantly).
+    if (this.settings.sentinelNewOnly && (!memoryKey(r) || this.mem.familiar(r, cellOf(this.pos)))) return
     const nm = this.displayName(r) || r.mac
     this.toast(`${this.t('newDevice')}: ${nm}`, 'info', r.key)
     this.notifyTelegram(`${this.t('newDevice')}: ${this.tgName(r)} (${r.kind}) @ ${r.rssi} dBm`)
@@ -312,10 +335,11 @@ class Engine {
     for (const r of this.radios.values()) {
       if (now - r.lastSeen > 10 * 60 * 1000) continue
       if (this.isMine(r)) continue
-      const isStrong = r.cls === 'FINDER' || r.attention
+      const isStrong = r.cls === 'FINDER' || r.attention || !!trackerState(r, now)?.separated
       if (!(isStrong ? this.coTravel(r) : this.coTravel(r, 1000, 10 * 60 * 1000))) continue
       let why
-      if (r.cls === 'FINDER') why = 'whyFinder'
+      if (trackerState(r, now)?.separated) why = 'whySeparated'
+      else if (r.cls === 'FINDER') why = 'whyFinder'
       else if (r.attention) why = 'whyAttn'
       else if (r.kind === 'BLE' && r.randomized) why = 'whyBle'
       else why = 'whyCotravel'
@@ -343,6 +367,78 @@ class Engine {
     }
     out.sort((a, b) => b.r.rssi - a.r.rssi)
     return out
+  }
+
+  // ---------- rotation linking, trackers, places, drones ----------
+  /** Link freshly settled random BLE addresses to the address they replaced. */
+  linkRotations(now) {
+    const all = [...this.radios.values()]
+    for (const r of all) {
+      if (r.linkChecked || r.kind !== 'BLE' || !r.randomized || now - r.firstSeen < 3000) continue
+      r.linkChecked = true
+      const prev = findPredecessor(all, r, now)
+      if (!prev) continue
+      linkRadios(prev, r)
+      // A device marked Mine or named stays so after it changes address.
+      if (this.named[prev.key] && !this.named[r.key]) this.setNamed(r.key, { ...this.named[prev.key] })
+    }
+  }
+
+  /** Alert once per device when a tracker that is away from its owner moves with you. */
+  checkTrackers(now) {
+    if (!this.settings.trackerAlerts) return
+    for (const r of this.radios.values()) {
+      if (now - r.lastSeen > 60000 || this.isMine(r)) continue
+      const id = r.identity || r.key
+      if (this.trackerAlerted.has(id)) continue
+      if (!trackerState(r, now)?.separated || !this.coTravel(r)) continue
+      this.trackerAlerted.add(id)
+      const name = this.displayName(r) || r.fleetIds.map((x) => this.fleetById(x)?.name).filter(Boolean)[0] || maskMac(r.mac, this.settings.privacy)
+      const body = this.t('trackerAlert', { name: '\u2068' + name + '\u2069' })
+      this.toast(body, 'alert', r.key)
+      if (this.settings.sound) this.beep(660, 0.18, 3)
+      if (this.settings.vibrate) try { navigator.vibrate?.([300, 100, 300, 100, 300]) } catch { /* ignore */ }
+      if (this.settings.voice) this.speak(this.t('trackerAlertSpeak'))
+      if (this.settings.notify && typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.hidden) {
+        try { new Notification(this.t('alertTitle'), { body, tag: 'tracker-' + id, icon: 'icon.svg' }) } catch { /* ignore */ }
+      }
+      this.notifyTelegram(`${this.t('trackerAlertSpeak')}: ${this.tgName(r)} @ ${r.rssi} dBm`)
+    }
+  }
+
+  currentCell() { return cellOf(this.pos) }
+  /** Teach the current place: every device heard in the last minute becomes familiar here. */
+  learnPlace(now = Date.now()) {
+    const recent = [...this.radios.values()].filter((r) => now - r.lastSeen < 60000)
+    const n = this.mem.learn(recent, this.currentCell(), now)
+    idb.set('places', this.mem.toJSON())
+    this.emit()
+    return n
+  }
+  /** Familiar vs new devices around you right now. */
+  placeSummary(now = Date.now()) {
+    const cell = this.currentCell()
+    const familiar = []
+    const fresh = []
+    for (const r of this.radios.values()) {
+      if (now - r.lastSeen > 60000 || this.isMine(r) || !memoryKey(r)) continue
+      ;(this.mem.familiar(r, cell) ? familiar : fresh).push(r)
+    }
+    fresh.sort((a, b) => b.rssi - a.rssi)
+    return { cell, located: cell !== NO_PLACE, familiar, fresh }
+  }
+  /** Devices remembered in places at least 1 km apart, excluding Mine. */
+  multiPlace() {
+    return this.mem.multiPlace({ exclude: (key) => !!this.named[key]?.mine })
+  }
+  forgetPlaces() {
+    this.mem = new PlaceMemory()
+    idb.set('places', this.mem.toJSON())
+    this.emit()
+  }
+  /** Remote ID drones heard in the last two minutes. */
+  drones(now = Date.now()) {
+    return [...this.radios.values()].filter((r) => r.drone && now - r.lastSeen < 120000).sort((a, b) => b.lastSeen - a.lastSeen)
   }
 
   // ---------- flood ----------
@@ -574,6 +670,7 @@ class Engine {
       const ok = await this.startBle()
       if (!ok) return
     }
+    if (src === 'bridge' && !this.startBridge()) return
     if (src === 'demo') this.sim = new Simulator(() => this.fleets, this.settings.density)
     if (src === 'replay' && !this.replay) { this.toast(this.t('sourceReplayHint')); return }
     this.running = true
@@ -587,6 +684,7 @@ class Engine {
     clearInterval(this.timer)
     try { this.bleScan?.stop() } catch { /* ignore */ }
     this.bleScan = null
+    this.stopBridge()
     this.syncGeo()
     idb.set('log', this.log)
     this.persistSits()
@@ -604,10 +702,21 @@ class Engine {
       const q = this.bleQueue
       this.bleQueue = []
       this.ingest(q, now)
+    } else if (this.settings.source === 'bridge' && this.bridgeQueue.length) {
+      const q = this.bridgeQueue
+      this.bridgeQueue = []
+      this.ingest(q, now)
     }
     this.sitPath(now)
+    this.linkRotations(now)
+    if (now % 5000 < 1000) this.checkTrackers(now)
     this.prune(now)
-    if (now % 15000 < 1000) { idb.set('log', this.log); this.persistSits() }
+    if (now % 15000 < 1000) {
+      idb.set('log', this.log)
+      this.persistSits()
+      this.mem.prune()
+      if (this.mem.dirty) { this.mem.dirty = false; idb.set('places', this.mem.toJSON()) }
+    }
     this.emit()
   }
 
@@ -638,6 +747,48 @@ class Engine {
       this.emit()
       return false
     }
+  }
+
+  // ---------- bridge (real Wi-Fi + BLE from bridge/fieldwatch_bridge.py) ----------
+  startBridge() {
+    const url = (this.settings.bridgeUrl || '').trim()
+    if (!validBridgeUrl(url)) { this.toast(this.t('bridgeNeedUrl'), 'warn'); return false }
+    this.bridgeQueue = []
+    this.bridgeWanted = true
+    this.connectBridge(url)
+    return true
+  }
+  connectBridge(url) {
+    let ws
+    try { ws = new WebSocket(url) } catch { this.bridgeState = 'error'; this.toast(this.t('bridgeFailed'), 'warn'); this.emit(); return }
+    this.bridge = ws
+    this.bridgeState = 'connecting'
+    ws.onopen = () => { this.bridgeState = 'open'; this.emit() }
+    ws.onmessage = (ev) => {
+      const msg = parseBridgeMessage(ev.data)
+      if (msg?.type === 'hello') { this.bridgeInfo = msg; this.emit() }
+      else if (msg?.type === 'sightings') {
+        this.bridgeQueue.push(...msg.items)
+        if (this.bridgeQueue.length > 5000) this.bridgeQueue.splice(0, this.bridgeQueue.length - 5000)
+      }
+    }
+    ws.onclose = (ev) => {
+      if (this.bridge === ws) this.bridge = null
+      if (ev.code === 1008) { this.bridgeState = 'denied'; this.bridgeWanted = false; this.toast(this.t('bridgeDenied'), 'warn') }
+      else if (this.bridgeWanted && this.running) {
+        this.bridgeState = 'retrying'
+        this.bridgeRetry = setTimeout(() => { if (this.bridgeWanted && this.running) this.connectBridge(url) }, 3000)
+      } else this.bridgeState = 'closed'
+      this.emit()
+    }
+    this.emit()
+  }
+  stopBridge() {
+    this.bridgeWanted = false
+    clearTimeout(this.bridgeRetry)
+    try { this.bridge?.close() } catch { /* ignore */ }
+    this.bridge = null
+    if (this.bridgeState) this.bridgeState = 'closed'
   }
 
   // ---------- replay ----------
@@ -681,7 +832,7 @@ class Engine {
     return JSON.stringify({
       format: 'fieldwatch-web-backup', version: 1, exportedAt: new Date().toISOString(),
       settings: portableSettings(this.settings), named: this.named, watch: [...this.watch],
-      fleets: this.fleets, sits: this.sits, log: this.log,
+      fleets: this.fleets, sits: this.sits, log: this.log, places: this.mem.toJSON(),
     }, null, 1)
   }
   async importAll(text) {
@@ -693,6 +844,7 @@ class Engine {
     if (Array.isArray(j.fleets) && j.fleets.length) await this.saveFleets(j.fleets)
     if (Array.isArray(j.sits)) { this.sits = j.sits; await idb.set('sits', this.sits) }
     if (Array.isArray(j.log)) { this.log = j.log.slice(0, LOG_CAP); await idb.set('log', this.log) }
+    if (j.places && typeof j.places === 'object') { this.mem = new PlaceMemory(j.places); await idb.set('places', this.mem.toJSON()) }
     const open = this.sits.find((s) => !s.end)
     this.activeSitId = open ? open.id : null
     this.emit()
@@ -704,6 +856,11 @@ class Engine {
     await idb.clear()
     location.reload()
   }
+}
+
+function isOdidUuid(u) {
+  const h = hexOnly(u).toUpperCase()
+  return h === 'FFFA' || (h.length === 32 && h.slice(4, 8) === 'FFFA')
 }
 
 function dvHex(dv) {

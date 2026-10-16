@@ -3,6 +3,7 @@ import { useEngine, Icon, Sheet, fmtDur, copyText, ConfirmButton } from '../ui.j
 import { debrief, compareSits, sitCsv, sitGpx, sitKml, sitWigle, logCsv, aiPrompt } from '../engine/reports.js'
 import { download, inViewer } from '../engine/storage.js'
 import { maskMac } from '../engine/geo.js'
+import { AiPanel } from './Intel.jsx'
 
 function Bar({ label, n, max, color }) {
   return (
@@ -69,6 +70,7 @@ function Debrief({ sit, onClose }) {
           <button className="btn sm" onClick={() => setPrompt(aiPrompt(sit, e, privacy))}><Icon name="sparkle" size={14} />{t('aiExport')}</button>
         </div>
         {privacy && <div className="note small">{t('privacyHint')}</div>}
+        <div className="no-print"><AiPanel title={t('aiDebrief')} getPrompt={() => aiPrompt(sit, e, privacy)} /></div>
         <div className="stats">
           <div className="stat"><b>{d.total}</b><span>{t('radios')}</span></div>
           <div className="stat"><b>{d.matched}</b><span>{t('matched')}</span></div>
