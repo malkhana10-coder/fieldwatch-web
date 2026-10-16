@@ -1,0 +1,73 @@
+# Builds the Android app (Capacitor wrapper around the web build) and publishes
+# the APK on a GitHub pre-release so it can be downloaded straight to a phone.
+name: Android APK
+
+on:
+  push:
+    branches: [main, fix/v1.2-review]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install and test
+        run: |
+          npm ci
+          npm test
+
+      - name: Build web app and sync into Android
+        run: |
+          npm run build
+          npx cap sync android
+
+      - name: Build APK
+        working-directory: android
+        run: ./gradlew --no-daemon assembleDebug
+
+      - name: Name the APK
+        id: apk
+        run: |
+          v=$(node -p "require('./package.json').version")
+          out="fieldwatch-${v}-build${GITHUB_RUN_NUMBER}.apk"
+          cp android/app/build/outputs/apk/debug/app-debug.apk "$out"
+          echo "file=$out" >> "$GITHUB_OUTPUT"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fieldwatch-apk
+          path: ${{ steps.apk.outputs.file }}
+
+      - name: Publish pre-release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-build-${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          name: Fieldwatch ${{ steps.apk.outputs.version }} (Android build ${{ github.run_number }})
+          prerelease: true
+          make_latest: false
+          files: ${{ steps.apk.outputs.file }}
+          body: |
+            Debug-signed APK of Fieldwatch Web ${{ steps.apk.outputs.version }} for sideloading.
+            Unofficial port of Fieldwatch by Off Grid Pete LLC (MIT).
+            Built from ${{ github.sha }}.

@@ -1,0 +1,9 @@
+{
+  "appId": "io.github.malkhana10.fieldwatch",
+  "appName": "Fieldwatch",
+  "webDir": "dist",
+  "android": {
+    "allowMixedContent": false,
+    "backgroundColor": "#0a0f0d"
+  }
+}
