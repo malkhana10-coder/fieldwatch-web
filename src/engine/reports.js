@@ -1,6 +1,8 @@
 // Debrief / compare / exports for sits and the log.
 import { csvCell, xmlEsc, distM, spreadM, maskMac } from './geo.js'
 import { LOG_HEADER, APP_VERSION } from './engine.js'
+import { isLocationField } from './decode.js'
+import { maskMacText } from './catalog.js'
 
 export function sitRadios(sit) {
   return Object.values(sit.radios).filter((r) => !r.flood)
@@ -139,7 +141,8 @@ export function radioText(r, engine, t) {
     r.company ? `${t('company')}: ${r.company}` : null,
     r.channel ? `${t('channel')}: ${r.channel} (${r.freq} MHz)` : null,
     ...r.fleetIds.map((id) => `◆ ${engine.fleetById(id)?.name}`),
-    ...(r.decoded || []).map((f) => `${f.label}: ${f.value}`),
+    // Privacy mode: no decoded coordinates (e.g. a drone's position) and no MACs inside decoded values.
+    ...(r.decoded || []).map((f) => `${f.label}: ${privacy && isLocationField(f) ? '••' : maskMacText(String(f.value), privacy)}`),
     `${t('firstSeen')}: ${new Date(r.firstSeen).toISOString()}`,
   ]
   return out.filter(Boolean).join('\n')

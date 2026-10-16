@@ -172,7 +172,8 @@ export function Settings() {
 
       <div className="section-title">{t('exportSettings')}</div>
       <div className="card card-pad row wrap">
-        <button className="btn" onClick={() => download('fieldwatch-web-settings.json', e.exportSettings(), 'application/json')}><Icon name="download" size={15} />{t('exportSettings')}</button>
+        {/* Named devices are keyed by MAC, so the settings file is off in privacy mode too. */}
+        <button className="btn" disabled={s.privacy} title={s.privacy ? t('privacyHint') : undefined} onClick={() => download('fieldwatch-web-settings.json', e.exportSettings(), 'application/json')}><Icon name="download" size={15} />{t('exportSettings')}</button>
         <button className="btn" onClick={async () => {
           const f = await pickFile('.json')
           if (!f) return

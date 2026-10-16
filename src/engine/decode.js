@@ -22,15 +22,29 @@ function readU(b, le) {
   return v
 }
 
-function gateOk(gate, p) {
-  if (!gate) return true
-  if (gate.op === 'len') return p.length === Math.max(1, gate.length || 1)
-  const want = toBytes(gate.valueHex)
-  const len = Math.max(1, want.length)
-  if (gate.offset < 0 || gate.offset + len > p.length) return false
-  const got = p.slice(gate.offset, gate.offset + len)
-  const eq = got.every((x, i) => x === want[i])
-  return gate.op === 'eq' ? eq : !eq
+// A gate decides whether a field applies to this payload. Ops (as in the Android
+// catalog): len (payload length), eq / neq (bytes equal / differ), mask (every bit
+// of valueHex set), nmask (none of them set). `and` chains a further gate that
+// must also hold. Unknown ops fail closed.
+function gateOk(gate, p, depth = 0) {
+  if (!gate || typeof gate !== 'object') return true
+  if (depth > 8) return false
+  let ok
+  if (gate.op === 'len') ok = p.length === Math.max(1, gate.length || 1)
+  else {
+    const want = toBytes(gate.valueHex)
+    const len = Math.max(1, want.length)
+    if (!(gate.offset >= 0) || gate.offset + len > p.length) return false
+    const got = p.slice(gate.offset, gate.offset + len)
+    switch (gate.op) {
+      case 'eq': ok = got.every((x, i) => x === want[i]); break
+      case 'neq': ok = !got.every((x, i) => x === want[i]); break
+      case 'mask': ok = got.every((x, i) => (x & want[i]) === want[i]); break
+      case 'nmask': ok = got.every((x, i) => (x & want[i]) === 0); break
+      default: ok = false
+    }
+  }
+  return ok && (!gate.and || gateOk(gate.and, p, depth + 1))
 }
 
 // Readable precision for ordinary values; fields scaled by less than 1e-5 (Remote ID

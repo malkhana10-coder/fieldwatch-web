@@ -38,12 +38,12 @@ keytool -genkeypair -keystore fieldwatch-release.keystore -alias fieldwatch \
 
 Changing keys is a one-time break: phones that have the app signed with the old key must uninstall it (which deletes its data) before they can install a build signed with the new one. Export a backup first (Settings › Export all data).
 
-Builds 1–3 (before this setup) were debug builds signed with throwaway keys and cannot be updated in place.
+Builds 1–5 (before this setup) were debug builds signed with throwaway keys and cannot be updated in place.
 
 ### Versions
 
 - `versionName` is read from `package.json` (`version`) by `app/build.gradle`.
-- `versionCode` is `100 + GITHUB_RUN_NUMBER` on CI (100 for local builds). Builds 1–3 used the bare run number. The run number restarts if the workflow file is renamed or recreated. If that happens, raise the offset so `versionCode` keeps growing, or Android refuses the update.
+- `versionCode` is `100 + GITHUB_RUN_NUMBER` on CI (100 for local builds). Builds 1–5 used the bare run number. The run number restarts if the workflow file is renamed or recreated. If that happens, raise the offset so `versionCode` keeps growing, or Android refuses the update.
 
 ### What the app needs from Android
 

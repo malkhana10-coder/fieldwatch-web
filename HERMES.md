@@ -50,7 +50,7 @@ The workflow `.github/workflows/android.yml` ("Android APK") does everything. It
 
 Phones that have the sideload-signed build must uninstall it once before installing a build signed with the new key. Tell the owner to use **Settings → Export all data** first.
 
-**Version bump.** Change `version` in `package.json`, which drives the app's About screen, exports and the release name. Keep `versionName` in `android/app/build.gradle` the same.
+**Version bump.** Change `version` in `package.json`, which drives the app's About screen, exports and the release name. `android/app/build.gradle` reads `versionName` from `package.json`, so there is nothing else to change.
 
 **Local build (optional).**
 ```bash

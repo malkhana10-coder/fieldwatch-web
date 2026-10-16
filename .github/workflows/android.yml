@@ -96,5 +96,5 @@ jobs:
             Built from ${{ github.sha }}. APK SHA-256: `${{ steps.apk.outputs.sha256 }}`
 
             Updating: every build from now on is signed with the same key, so it installs over the previous one and keeps your data.
-            Android builds 1-3 were signed with throwaway debug keys. If one of those is installed, Android refuses this update:
+            Android builds 1-5 were signed with throwaway debug keys. If one of those is installed, Android refuses this update:
             uninstall it first. That deletes its data, and exports did not work in those builds, so their data cannot be carried over.
