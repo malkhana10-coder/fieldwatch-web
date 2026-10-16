@@ -9,50 +9,154 @@ import { distM, maskMac } from './geo.js'
 import { findPredecessor, linkRadios, trackerState, PlaceMemory, cellOf, memoryKey, addSample, NO_PLACE } from './intel.js'
 import { decodeAdvert, mergeDrone } from './odid.js'
 import { parseBridgeMessage, validBridgeUrl } from './bridge.js'
-import { makeT } from '../i18n.js'
+import { makeT, CLASSES } from '../i18n.js'
 
 const DEFAULT_FILTERS = { radio: 'BOTH', minRssi: -100, onlyMatched: false, onlyAttention: false, hideMine: false, hideRandom: false, classes: [], maxAge: 60, q: '' }
 
 const TYPES = { string: (v) => typeof v === 'string', boolean: (v) => typeof v === 'boolean', number: (v) => typeof v === 'number' && Number.isFinite(v) }
+const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v)
+const fin = (v) => typeof v === 'number' && Number.isFinite(v)
+const str = (v, max) => (typeof v === 'string' ? v.slice(0, max) : '')
+
+export const SOURCES = ['demo', 'ble', 'bridge', 'replay']
+// Settings that pick one of a fixed set of values. Anything else (a typo, an
+// older or newer app, "__proto__") would reach lookups like `{…}[sort]`.
+const SETTING_ENUMS = {
+  lang: ['en', 'ar'], theme: ['system', 'light', 'dark', 'night'], density: ['SAVER', 'BALANCED', 'PERFORMANCE'],
+  source: SOURCES, view: ['LIST', 'RADAR', 'CLASS', 'TIMELINE', 'MAP'], sort: ['STRENGTH', 'NEWEST', 'FIRST_SEEN', 'NAME', 'SIGNATURES'],
+}
+const FILTER_ENUMS = { radio: ['BOTH', 'WIFI', 'BLE'] }
+const CLASS_SET = new Set(CLASSES)
+// Signature kinds: the app's classes plus BODYWORN, the Android app's alias for wearables.
+const FLEET_KINDS = new Set([...CLASSES, 'BODYWORN'])
+const fleetKind = (k) => (typeof k === 'string' && FLEET_KINDS.has(k) ? k : 'OTHER')
+// The largest stock signature (fleet-huawei) has 2051 rules and fleet-cisco 1291;
+// a backup or signature export must round-trip them intact.
+const MAX_FLEET_RULES = 5000
 
 /**
  * Merge an untrusted settings object onto `base`: unknown keys are dropped and
- * every known key must keep the type of its default, so a hand-edited or
- * malicious file can't leave the app in a state that crashes on every render.
+ * every known key must keep the type of its default (and, for enum-like keys,
+ * be one of the allowed values), so a hand-edited or malicious file can't leave
+ * the app in a state that crashes on every render.
  */
 export function sanitizeSettings(input, base) {
   const out = { ...base }
-  if (!input || typeof input !== 'object') return out
+  if (!isObj(input)) return out
   const defaults = defaultSettings()
   for (const [k, v] of Object.entries(input)) {
-    if (!(k in defaults) || k === 'filters' || k === 'presets' || k === 'watchedNets') continue
-    const d = defaults[k]
-    if (TYPES[typeof d]?.(v)) out[k] = v
+    if (!Object.hasOwn(defaults, k) || k === 'filters' || k === 'presets' || k === 'watchedNets') continue
+    if (!TYPES[typeof defaults[k]]?.(v)) continue
+    if (Object.hasOwn(SETTING_ENUMS, k) && !SETTING_ENUMS[k].includes(v)) continue
+    out[k] = v
   }
-  if (input.filters && typeof input.filters === 'object') {
+  if (isObj(input.filters)) {
     const f = { ...DEFAULT_FILTERS, ...base.filters }
     for (const [k, v] of Object.entries(input.filters)) {
-      if (!(k in DEFAULT_FILTERS)) continue
-      if (k === 'classes') { if (Array.isArray(v)) f.classes = v.filter((x) => typeof x === 'string').slice(0, 64) }
+      if (!Object.hasOwn(DEFAULT_FILTERS, k)) continue
+      if (k === 'classes') { if (Array.isArray(v)) f.classes = [...new Set(v.filter((x) => typeof x === 'string' && CLASS_SET.has(x)))] }
+      else if (Object.hasOwn(FILTER_ENUMS, k)) { if (FILTER_ENUMS[k].includes(v)) f[k] = v }
       else if (TYPES[typeof DEFAULT_FILTERS[k]]?.(v)) f[k] = v
     }
     out.filters = f
   }
   if (Array.isArray(input.watchedNets)) out.watchedNets = input.watchedNets.filter((x) => typeof x === 'string' && x.trim()).map((x) => x.slice(0, 64)).slice(0, 50)
-  if (Array.isArray(input.presets)) out.presets = input.presets.filter((x) => x && typeof x.name === 'string' && x.filters && typeof x.filters === 'object').slice(0, 30).map((x) => ({ name: x.name.slice(0, 40), filters: sanitizeSettings({ filters: x.filters }, { filters: DEFAULT_FILTERS }).filters }))
+  if (Array.isArray(input.presets)) out.presets = input.presets.filter((x) => x && typeof x.name === 'string' && isObj(x.filters)).slice(0, 30).map((x) => ({ name: x.name.slice(0, 40), filters: sanitizeSettings({ filters: x.filters }, { filters: DEFAULT_FILTERS }).filters }))
   if (out.cooldown < 0) out.cooldown = 60
   return out
 }
 
 /** One signature from an untrusted file, normalised to the catalog shape (or null). */
 export function sanitizeFleet(f) {
-  if (!f || typeof f.id !== 'string' || typeof f.name !== 'string' || !Array.isArray(f.rules)) return null
+  if (!isObj(f) || typeof f.id !== 'string' || !f.id || typeof f.name !== 'string' || !Array.isArray(f.rules)) return null
+  const decode = sanitizeDecode(f.decode)
+  const color = Number(f.colorIndex)
   return {
-    id: f.id.slice(0, 80), name: String(f.name).slice(0, 80), enabled: f.enabled !== false, matchAny: f.matchAny !== false,
-    colorIndex: Number(f.colorIndex) || 0, minPeers: 0, peerWindowSec: 60, clusterByOui: false, sequentialMac: false,
-    notes: String(f.notes || '').slice(0, 2000), attentionNote: String(f.attentionNote || '').slice(0, 1000), builtIn: !!f.builtIn, kind: String(f.kind || 'OTHER').slice(0, 32),
-    rules: f.rules.filter((r) => r && typeof r.kind === 'string').slice(0, 500).map((r) => ({ kind: r.kind, text: String(r.text || '').slice(0, 128), companyId: Number(r.companyId) || 0, dataPrefixHex: String(r.dataPrefixHex || '').slice(0, 128), radio: r.radio === 'WIFI' || r.radio === 'BLE' ? r.radio : null, enabled: r.enabled !== false })),
-    ...(f.decode && Array.isArray(f.decode.fields) ? { decode: f.decode } : {}),
+    id: f.id.slice(0, 80), name: f.name.slice(0, 80), enabled: f.enabled !== false, matchAny: f.matchAny !== false,
+    colorIndex: Number.isInteger(color) && color >= 0 && color < 1000 ? color : 0, minPeers: 0, peerWindowSec: 60, clusterByOui: false, sequentialMac: false,
+    notes: String(f.notes || '').slice(0, 2000), attentionNote: String(f.attentionNote || '').slice(0, 1000), builtIn: !!f.builtIn, kind: fleetKind(f.kind),
+    rules: f.rules.filter((r) => isObj(r) && typeof r.kind === 'string').slice(0, MAX_FLEET_RULES).map((r) => ({ kind: r.kind.slice(0, 32), text: String(r.text || '').slice(0, 128), companyId: Number(r.companyId) || 0, dataPrefixHex: String(r.dataPrefixHex || '').slice(0, 128), radio: r.radio === 'WIFI' || r.radio === 'BLE' ? r.radio : null, enabled: r.enabled !== false })),
+    ...(decode ? { decode } : {}),
+  }
+}
+
+/**
+ * Light repair of a signature already stored on this device (it may predate
+ * the stricter import checks): fixes only what can crash the app — an unknown
+ * class, malformed rules or a malformed decode spec — and keeps everything else.
+ */
+function repairFleet(f) {
+  if (!isObj(f) || typeof f.id !== 'string' || typeof f.name !== 'string' || !Array.isArray(f.rules)) return null
+  const out = { ...f, kind: fleetKind(f.kind), rules: f.rules.filter((r) => isObj(r) && typeof r.kind === 'string') }
+  if ('decode' in out) {
+    const d = sanitizeDecode(f.decode)
+    if (d) out.decode = d
+    else delete out.decode
+  }
+  return out
+}
+
+// ---------- signature field decoders (`decode` specs, see decode.js) ----------
+const DECODE_TYPES = new Set(['u8', 'i8', 'u16', 'i16', 'u24', 'u32', 'i32', 'f32', 'bool', 'bits', 'mac', 'utf8', 'hex'])
+// Gate ops used by the catalog (mask/nmask appear inside `and` chains).
+const GATE_OPS = new Set(['len', 'eq', 'neq', 'mask', 'nmask'])
+const isIndex = (v) => Number.isInteger(v) && v >= 0 && v <= 1024
+const optNum = (v) => (fin(v) ? v : null)
+const optIndex = (v) => (isIndex(v) ? v : null)
+
+/** String → string map (enum labels), or null. */
+function strMap(m, maxKeys = 256) {
+  if (!isObj(m)) return null
+  const out = {}
+  for (const [k, v] of Object.entries(m).slice(0, maxKeys)) {
+    if (k === '__proto__' || (typeof v !== 'string' && !fin(v))) continue
+    out[k.slice(0, 64)] = String(v).slice(0, 1000)
+  }
+  return out
+}
+
+/** A field's `when` gate (with its `and` chain), or null when malformed. */
+function sanitizeGate(g, depth = 0) {
+  if (!isObj(g) || !GATE_OPS.has(g.op) || depth > 8) return null
+  const out = { offset: isIndex(g.offset) ? g.offset : 0, length: isIndex(g.length) ? g.length : 1, op: g.op, valueHex: str(g.valueHex, 64) }
+  if (g.op !== 'len' && (!isIndex(g.offset) || typeof g.valueHex !== 'string')) return null
+  if (g.and != null) {
+    const and = sanitizeGate(g.and, depth + 1)
+    if (!and) return null
+    out.and = and
+  }
+  return out
+}
+
+function sanitizeField(f) {
+  if (!isObj(f) || typeof f.id !== 'string' || !f.id || !DECODE_TYPES.has(f.type) || !isIndex(f.offset)) return null
+  if (f.length != null && !(isIndex(f.length) && f.length > 0)) return null
+  // A malformed gate must drop the field: decoding it unconditionally would show wrong values.
+  const when = f.when == null ? null : sanitizeGate(f.when)
+  if (f.when != null && !when) return null
+  const out = {
+    id: f.id.slice(0, 64), label: typeof f.label === 'string' && f.label ? f.label.slice(0, 120) : f.id.slice(0, 64),
+    offset: f.offset, length: f.length ?? null, type: f.type, endian: f.endian === 'be' ? 'be' : 'le',
+    bitOffset: optIndex(f.bitOffset), bitWidth: optIndex(f.bitWidth), scale: optNum(f.scale), offsetAdd: optNum(f.offsetAdd), modulo: optNum(f.modulo),
+    unit: typeof f.unit === 'string' ? f.unit.slice(0, 32) : null, enum: strMap(f.enum),
+  }
+  if (typeof f.live === 'boolean') out.live = f.live
+  if (Array.isArray(f.liveEmphasis)) out.liveEmphasis = f.liveEmphasis.filter((x) => typeof x === 'string').slice(0, 64)
+  if (isObj(f.enumNotes)) out.enumNotes = strMap(f.enumNotes)
+  out.when = when
+  return out
+}
+
+/** A signature's `decode` spec rebuilt field by field, or null when unusable. */
+export function sanitizeDecode(d) {
+  if (!isObj(d) || !Array.isArray(d.fields) || (d.source !== 'manufacturerData' && d.source !== 'serviceData')) return null
+  const fields = d.fields.slice(0, 128).map(sanitizeField).filter(Boolean)
+  if (!fields.length) return null
+  return {
+    source: d.source, serviceUuid: typeof d.serviceUuid === 'string' ? d.serviceUuid.slice(0, 64) : null,
+    companyId: Number.isInteger(d.companyId) && d.companyId >= 0 && d.companyId <= 0xffff ? d.companyId : null,
+    ...(typeof d.includeCompanyId === 'boolean' ? { includeCompanyId: d.includeCompanyId } : {}),
+    fields,
   }
 }
 
@@ -87,18 +191,32 @@ const DEVICE_ONLY_SETTINGS = ['tgEnabled', 'tgToken', 'tgChatId', 'bridgeUrl', '
 const TG_MIN_GAP_MS = 5000
 const TG_QUEUE_CAP = 20
 const HISTORY_CAP = 180
+// A sit records up to SIT_RADIO_CAP devices; past that only devices worth a second
+// look (trackers, Extra attention, watched, named, drones) are still recorded, up to
+// SIT_RADIO_HARD_CAP, and the rest are counted in sit.dropped.
 const SIT_RADIO_CAP = 4000
+const SIT_RADIO_HARD_CAP = 5000
 const SIT_PATH_CAP = 20000
+// Where a device was heard, per sit entry: the first point, the strongest one and
+// a spread of the rest (see thinPts). Imported sits keep up to SIT_PTS_IMPORT_CAP.
+const SIT_PTS_CAP = 12
+const SIT_PTS_IMPORT_CAP = 64
 const PRUNE_MS = 10 * 60 * 1000
+// Safety valve for the live table in very dense places (normally the 10-minute prune keeps it near 1000).
+const RADIO_CAP = 3000
+const QUEUE_CAP = 5000
+const LOOPBACK_WS = /^ws:\/\/(127\.\d+\.\d+\.\d+|localhost|\[::1\])(:\d+)?(\/|\?|$)/i
 
 class Engine {
   constructor() {
     this.listeners = new Set()
     this.version = 0
     this.settings = sanitizeSettings(ls.get('settings', {}), defaultSettings())
-    this.named = ls.get('named', {})
-    this.watch = new Set(ls.get('watch', null) || [])
-    this.watchInit = ls.get('watch', null) != null
+    const named = ls.get('named', {})
+    this.named = isObj(named) ? named : {}
+    const watch = ls.get('watch', null)
+    this.watch = new Set(Array.isArray(watch) ? watch.filter((x) => typeof x === 'string') : [])
+    this.watchInit = Array.isArray(watch)
     this.fleets = []
     this.stockFleets = []
     this.catalogVersion = null
@@ -127,6 +245,10 @@ class Engine {
     this.tgTimer = null
     this.tgNextAt = 0
     this.mem = new PlaceMemory()
+    // Throwaway place memories for sources that must never reach the persisted one (demo, replay).
+    this.scratchMems = new Map()
+    // Entries per sit, kept as a running count (Object.keys on a 4000-entry sit per sighting is slow).
+    this.sitCounts = new WeakMap()
     this.trackerAlerted = new Set()
     this.bridge = null
     this.bridgeQueue = []
@@ -156,17 +278,22 @@ class Engine {
     }
     this.stockFleets = stock.fleets || []
     this.catalogVersion = stock.catalogVersion
+    // Stored data is repaired on load too, so data saved by an older version with
+    // weaker import checks can't crash every launch.
     const savedFleets = await idb.get('fleets')
-    this.fleets = Array.isArray(savedFleets) && savedFleets.length ? savedFleets : structuredClone(this.stockFleets)
+    const fleets = Array.isArray(savedFleets) ? savedFleets.map(repairFleet).filter(Boolean) : []
+    this.fleets = fleets.length ? fleets : structuredClone(this.stockFleets)
     if (!this.watchInit) {
       // Default watchlist: trackers, drones, pentest gear, smart glasses, and flagged recorders / cameras.
       this.watch = new Set(this.fleets.filter((f) => ['DRONE', 'FINDER', 'HACKING', 'GLASSES'].includes(f.kind) || (f.attentionNote && ['WEARABLE', 'SURVEILLANCE'].includes(f.kind))).map((f) => f.id))
       ls.set('watch', [...this.watch])
     }
     this.compiled = compileCatalog(this.fleets)
-    this.log = (await idb.get('log')) || []
-    this.sits = (await idb.get('sits')) || []
-    this.mem = new PlaceMemory(await idb.get('places'))
+    const log = await idb.get('log')
+    this.log = Array.isArray(log) ? log : []
+    this.sits = mergeActiveSit(await idb.get('sits'), await idb.get('sitActive'))
+    const places = await idb.get('places')
+    this.mem = new PlaceMemory(isObj(places) ? sanitizePlaces(places) : undefined)
     const open = this.sits.find((s) => !s.end)
     if (open) this.activeSitId = open.id
     this.ready = true
@@ -175,6 +302,10 @@ class Engine {
 
   // ---------- settings ----------
   set(patch) {
+    const sourceChanged = 'source' in patch && patch.source !== this.settings.source
+    // Never switch sources under a running scan: the old BLE scan or bridge would
+    // keep running unseen while ticks read the new source.
+    if (sourceChanged && this.running) this.stop()
     this.settings = { ...this.settings, ...patch }
     if (patch.lang) this.t = makeT(patch.lang)
     if (patch.density && this.sim) this.sim.density = patch.density
@@ -182,7 +313,13 @@ class Engine {
     clearTimeout(this.saveTimer)
     this.saveTimer = setTimeout(() => ls.set('settings', this.settings), 300)
     if ('location' in patch) this.syncGeo()
-    if ('source' in patch) this.pos = null
+    if (sourceChanged) {
+      // Radios and the position from the previous source (e.g. demo devices) must not
+      // mix with the new one: they would be learned into its place memory, listed, alerted.
+      this.pos = null
+      this.radios.clear()
+      this.recentNew = []
+    }
     this.emit()
   }
   setFilters(patch) { this.set({ filters: { ...this.settings.filters, ...patch } }) }
@@ -212,7 +349,7 @@ class Engine {
   }
   importSignatures(text) {
     const j = JSON.parse(text)
-    const list = Array.isArray(j) ? j : j.fleets
+    const list = Array.isArray(j) ? j : isObj(j) ? j.fleets : null
     if (!Array.isArray(list)) throw new Error('no "fleets" array')
     const clean = list.map(sanitizeFleet).filter(Boolean)
     const byId = new Map(this.fleets.map((f) => [f.id, f]))
@@ -228,8 +365,11 @@ class Engine {
   setNamed(key, patch) {
     const cur = this.named[key] || {}
     const next = { ...cur, ...patch }
-    if (!next.name && !next.mine && !next.alert && !next.notes) delete this.named[key]
-    else this.named[key] = next
+    // Replace rather than mutate: screens memoise their device lists on `engine.named`.
+    const named = { ...this.named }
+    if (!next.name && !next.mine && !next.alert && !next.notes) delete named[key]
+    else named[key] = next
+    this.named = named
     ls.set('named', this.named)
     this.emit()
   }
@@ -241,7 +381,12 @@ class Engine {
     r.cls = fleets[0]?.kind === 'BODYWORN' ? 'WEARABLE' : fleets[0]?.kind || null
     r.attention = fleets.some((f) => f.attentionNote)
     r.decoded = []
-    for (const f of fleets) { if (f.decode) { r.decoded = decodeFields(f, r); if (r.decoded.length) break } }
+    for (const f of fleets) {
+      if (!f.decode) continue
+      // A bad decode spec must not take the whole ingest down with it.
+      try { r.decoded = decodeFields(f, r) } catch { r.decoded = [] }
+      if (r.decoded.length) break
+    }
   }
 
   ingest(batch, now = Date.now()) {
@@ -249,12 +394,19 @@ class Engine {
     const cell = cellOf(pos)
     const sit = this.activeSit()
     for (const s of batch) {
+      // Every source is validated upstream; this is the last line of defence so one
+      // malformed sighting can't leave a half-built radio in the table.
+      if (!s || (s.kind !== 'WIFI' && s.kind !== 'BLE') || typeof s.mac !== 'string') continue
       const mac = normMac(s.mac)
+      if (!mac) continue
+      const name = typeof s.name === 'string' ? s.name : ''
+      const rssi = fin(s.rssi) ? s.rssi : -100
       const key = s.kind + ':' + mac
       let r = this.radios.get(key)
       const isNew = !r
       if (!r) {
-        r = { key, kind: s.kind, mac, firstSeen: now, history: [], count: 0, positions: [], name: '' }
+        // `src` records which source produced the radio, so it only ever reaches that source's place memory.
+        r = { key, kind: s.kind, mac, firstSeen: now, history: [], count: 0, positions: [], name: '', src: this.settings.source }
         r.vendor = ouiVendor(mac)
         // BLE random addresses (resolvable private, static random…) don't reliably set the
         // "locally administered" bit Wi-Fi uses. Trust the address type when the source
@@ -264,9 +416,9 @@ class Engine {
           : isRandomized(mac)
         this.radios.set(key, r)
       }
-      const nameChanged = (s.name || '') !== r.name
+      const nameChanged = name !== r.name
       Object.assign(r, {
-        name: s.name || r.name || '', hidden: !!s.hidden, rssi: s.rssi, lastSeen: now,
+        name: name || r.name || '', hidden: !!s.hidden, rssi, lastSeen: now,
         channel: s.channel ?? r.channel, freq: s.freq ?? r.freq, security: s.security ?? r.security,
         mfg: s.mfg?.length ? s.mfg : r.mfg || [], uuids: s.uuids?.length ? s.uuids : r.uuids || [],
         svcData: s.svcData?.length ? s.svcData : r.svcData || [], vendorIe: s.vendorIe?.length ? s.vendorIe : r.vendorIe || [],
@@ -277,7 +429,7 @@ class Engine {
         if (msgs.length) r.drone = mergeDrone(r.drone, msgs, now)
       }
       r.count++
-      r.history.push([now, s.rssi])
+      r.history.push([now, rssi])
       if (r.history.length > HISTORY_CAP) r.history.shift()
       if (isNew || nameChanged || s.svcData?.length) this.classify(r)
       if (pos) {
@@ -285,7 +437,7 @@ class Engine {
         if (!last || distM(last, pos) > 15) { r.positions.push({ lat: pos.lat, lon: pos.lon, t: now }); if (r.positions.length > 40) r.positions.shift() }
         addSample(r, pos, now)
       }
-      this.placeMem().observe(r, cell, now)
+      this.placeMem(r.src).observe(r, cell, now)
       this.stats.packets++
       this.logRow(r, now)
       if (sit) this.sitRecord(sit, r, now)
@@ -297,6 +449,13 @@ class Engine {
 
   prune(now = Date.now()) {
     for (const [k, r] of this.radios) if (now - r.lastSeen > PRUNE_MS) this.radios.delete(k)
+    if (this.radios.size > RADIO_CAP) {
+      // Far more radios than a place normally has (rotating addresses, a flood):
+      // drop the longest-silent ones, down to 90 % so this doesn't run every tick.
+      const n = this.radios.size - Math.floor(RADIO_CAP * 0.9)
+      const stale = [...this.radios.values()].filter((r) => r.key !== this.huntKey).sort((a, b) => a.lastSeen - b.lastSeen)
+      for (const r of stale.slice(0, n)) this.radios.delete(r.key)
+    }
   }
 
   isMine(r) { return !!this.named[r.key]?.mine }
@@ -338,8 +497,8 @@ class Engine {
       FIRST_SEEN: (a, b) => b.firstSeen - a.firstSeen,
       NAME: (a, b) => (this.displayName(a) || '￿').localeCompare(this.displayName(b) || '￿'),
       SIGNATURES: (a, b) => (b.attention - a.attention) || (b.fleetIds.length - a.fleetIds.length) || b.rssi - a.rssi,
-    }[sort] || ((a, b) => b.rssi - a.rssi)
-    return out.sort(by)
+    }
+    return out.sort(Object.hasOwn(by, sort) ? by[sort] : by.STRENGTH)
   }
 
   avgRssi(r, windowMs = 15000) {
@@ -365,7 +524,7 @@ class Engine {
     if (this.isMine(r) || this.hiddenKeys.has(r.key)) return
     // "New here only": skip devices this place already knows, and random phone
     // addresses that can never be recognised again (they would alert constantly).
-    if (this.settings.sentinelNewOnly && (!memoryKey(r) || this.placeMem().familiar(r, cellOf(this.pos)))) return
+    if (this.settings.sentinelNewOnly && (!memoryKey(r) || this.placeMem(r.src).familiar(r, cellOf(this.pos)))) return
     const nm = this.displayName(r) || maskMac(r.mac, this.settings.privacy)
     this.toast(`${this.t('newDevice')}: ${nm}`, 'info', r.key)
     this.notifyTelegram(`${this.t('newDevice')}: ${this.tgName(r)} (${r.kind}) @ ${r.rssi} dBm`)
@@ -408,10 +567,11 @@ class Engine {
       if (now - r.lastSeen > 10 * 60 * 1000) continue
       if (this.isMine(r)) continue
       if (r.hidden) { out.push({ r, why: 'hiddenSsid' }); continue }
-      const noName = !r.name
-      const noFleet = !r.fleetIds.length
-      if (noName && r.randomized && !r.vendor) out.push({ r, why: 'hiddenRand' })
-      else if (noName && !r.vendor && noFleet && r.kind === 'BLE') out.push({ r, why: 'hiddenAnon' })
+      // A signature match (an iPhone, AirPods, a Galaxy phone…) already says what the
+      // device is, so only unidentified, nameless devices count as hiding.
+      if (r.name || r.vendor || r.fleetIds.length) continue
+      if (r.randomized) out.push({ r, why: 'hiddenRand' })
+      else if (r.kind === 'BLE') out.push({ r, why: 'hiddenAnon' })
     }
     out.sort((a, b) => b.r.rssi - a.r.rssi)
     return out
@@ -430,8 +590,9 @@ class Engine {
       // A device marked Mine or named stays so after it changes address. Move the
       // entry rather than copy it, so rotations don't pile up in storage.
       if (this.named[prev.key] && !this.named[r.key]) {
-        this.named[r.key] = this.named[prev.key]
-        delete this.named[prev.key]
+        const named = { ...this.named, [r.key]: this.named[prev.key] }
+        delete named[prev.key]
+        this.named = named
         ls.set('named', this.named)
       }
     }
@@ -460,19 +621,32 @@ class Engine {
   }
 
   currentCell() { return cellOf(this.pos) }
-  /** The simulator gets its own throwaway memory so demo devices never mix with real places. */
-  placeMem() {
-    if (this.settings.source !== 'demo') return this.mem
-    return this.demoMem || (this.demoMem = new PlaceMemory())
+  /**
+   * Place memory for a source (default: the current one). Only devices heard live
+   * here (BLE scan, bridge) reach the persisted memory. The simulator and log
+   * replay (possibly of a demo log, with replay-time days) get throwaway memories.
+   */
+  placeMem(src = this.settings.source) {
+    if (src === 'ble' || src === 'bridge') return this.mem
+    let m = this.scratchMems.get(src)
+    if (!m) this.scratchMems.set(src, (m = new PlaceMemory()))
+    return m
   }
   /** Teach the current place: every device heard in the last minute becomes familiar here. */
   learnPlace(now = Date.now()) {
     const recent = [...this.radios.values()].filter((r) => now - r.lastSeen < 60000)
     // Never learn trackers or anything already travelling with you as "familiar".
     const safe = recent.filter((r) => !trackerState(r, now) && !this.coTravel(r))
-    const mem = this.placeMem()
-    const n = mem.learn(safe, this.currentCell(), now)
-    if (mem === this.mem) idb.set('places', this.mem.toJSON())
+    // Each radio goes to the memory of the source it came from.
+    const bySrc = new Map()
+    for (const r of safe) {
+      const mem = this.placeMem(r.src)
+      if (!bySrc.has(mem)) bySrc.set(mem, [])
+      bySrc.get(mem).push(r)
+    }
+    let n = 0
+    for (const [mem, list] of bySrc) n += mem.learn(list, this.currentCell(), now)
+    if (bySrc.has(this.mem)) idb.set('places', this.mem.toJSON())
     this.emit()
     return n
   }
@@ -483,7 +657,7 @@ class Engine {
     const fresh = []
     for (const r of this.radios.values()) {
       if (now - r.lastSeen > 60000 || this.isMine(r) || !memoryKey(r)) continue
-      ;(this.placeMem().familiar(r, cell) ? familiar : fresh).push(r)
+      ;(this.placeMem(r.src).familiar(r, cell) ? familiar : fresh).push(r)
     }
     fresh.sort((a, b) => b.rssi - a.rssi)
     return { cell, located: cell !== NO_PLACE, familiar, fresh }
@@ -493,7 +667,7 @@ class Engine {
     return this.placeMem().multiPlace({ exclude: (key) => !!this.named[key]?.mine })
   }
   forgetPlaces() {
-    this.demoMem = null
+    this.scratchMems.clear()
     this.mem = new PlaceMemory()
     idb.set('places', this.mem.toJSON())
     this.emit()
@@ -681,11 +855,32 @@ class Engine {
     this.emit()
   }
   renameSit(id, name) { const s = this.sits.find((x) => x.id === id); if (s) { s.name = name; this.persistSits(); this.emit() } }
+  /** Number of devices recorded in a sit (a running count, not Object.keys per sighting). */
+  sitSize(s) {
+    let n = this.sitCounts.get(s)
+    if (n == null) { n = Object.keys(s.radios).length; this.sitCounts.set(s, n) }
+    return n
+  }
+  /** Devices a full sit still records: the ones a debrief must never miss. */
+  sitPriority(r, now) {
+    return !!(r.attention || r.cls === 'FINDER' || r.drone || trackerState(r, now) || this.named[r.key]
+      || r.fleetIds.some((id) => this.watch.has(id)) || this.watchedNetFor(r))
+  }
   sitRecord(s, r, now) {
     let e = s.radios[r.key]
-    if (!e && Object.keys(s.radios).length >= SIT_RADIO_CAP) return
+    if (!e) {
+      const n = this.sitSize(s)
+      if (n >= SIT_RADIO_CAP && (n >= SIT_RADIO_HARD_CAP || !this.sitPriority(r, now))) {
+        // Count each left-out device once (per live radio) so the debrief can say the sit was full.
+        if (r.sitDropped !== s.id) { r.sitDropped = s.id; s.dropped = (s.dropped || 0) + 1; this.sitsDirty = true }
+        return
+      }
+      if (r.sitDropped === s.id) { r.sitDropped = null; s.dropped = Math.max(0, (s.dropped || 0) - 1) }
+      e = s.radios[r.key] = { key: r.key, kind: r.kind, mac: r.mac, name: r.name, vendor: r.vendor, first: now, last: now, maxRssi: r.rssi, minRssi: r.rssi, sum: 0, count: 0, channel: r.channel || 0, fleetIds: [], pts: [] }
+      if (r.security) e.security = r.security
+      this.sitCounts.set(s, n + 1)
+    }
     this.sitsDirty = true
-    if (!e) e = s.radios[r.key] = { key: r.key, kind: r.kind, mac: r.mac, name: r.name, vendor: r.vendor, first: now, last: now, maxRssi: r.rssi, minRssi: r.rssi, sum: 0, count: 0, channel: r.channel || 0, fleetIds: [], pts: [], security: r.security || '' }
     e.last = now
     e.name = r.name || e.name
     e.maxRssi = Math.max(e.maxRssi, r.rssi)
@@ -693,20 +888,36 @@ class Engine {
     e.sum += r.rssi
     e.count++
     e.fleetIds = r.fleetIds
-    e.mine = this.isMine(r)
-    e.flood = this.hiddenKeys.has(r.key)
+    // Stored only once true (absent reads as false): saves ~30 bytes on each of thousands of entries.
+    const mine = this.isMine(r)
+    if (mine || e.mine) e.mine = mine
+    const flood = this.hiddenKeys.has(r.key)
+    if (flood || e.flood) e.flood = flood
     if (this.pos) {
       const last = e.pts[e.pts.length - 1]
-      if (!last || distM(last, this.pos) > 20) { e.pts.push({ lat: this.pos.lat, lon: this.pos.lon, t: now, rssi: r.rssi }); if (e.pts.length > 40) e.pts.shift() }
+      if (!last || distM(last, this.pos) > 20) {
+        e.pts.push({ lat: round6(this.pos.lat), lon: round6(this.pos.lon), t: now, rssi: r.rssi })
+        if (e.pts.length > SIT_PTS_CAP) thinPts(e.pts)
+      }
     }
   }
   sitPath(now) {
     const s = this.activeSit()
     if (!s || !this.pos) return
     const last = s.path[s.path.length - 1]
-    if ((!last || distM(last, this.pos) > 8) && s.path.length < SIT_PATH_CAP) { s.path.push({ lat: this.pos.lat, lon: this.pos.lon, t: now }); this.sitsDirty = true }
+    if ((!last || distM(last, this.pos) > 8) && s.path.length < SIT_PATH_CAP) { s.path.push({ lat: round6(this.pos.lat), lon: round6(this.pos.lon), t: now }); this.sitsDirty = true }
   }
-  persistSits() { this.sitsDirty = false; idb.set('sits', this.sits) }
+  /**
+   * Save sits. Finished sits only change on start/end/rename/delete/import, so the
+   * periodic save (`all` false) writes just the running sit under its own key
+   * instead of re-serialising every past sit every 15 s.
+   */
+  persistSits(all = true) {
+    this.sitsDirty = false
+    const active = this.activeSit()
+    if (all) idb.set('sits', active ? this.sits.filter((s) => s !== active) : this.sits)
+    idb.set('sitActive', active || null)
+  }
 
   // ---------- geolocation ----------
   syncGeo() {
@@ -733,6 +944,7 @@ class Engine {
   async startSource() {
     this.ac()
     const src = this.settings.source
+    if (!SOURCES.includes(src)) return
     this.stats.started = Date.now()
     if (src === 'ble') {
       const ok = await this.startBle()
@@ -755,10 +967,12 @@ class Engine {
     this.pos = null
     try { this.bleScan?.stop() } catch { /* ignore */ }
     this.bleScan = null
+    this.bleQueue = []
     this.stopBridge()
+    this.bridgeQueue = []
     this.syncGeo()
     idb.set('log', this.log)
-    this.persistSits()
+    this.persistSits(false)
     this.savePlaces()
     this.emit()
   }
@@ -793,7 +1007,7 @@ class Engine {
     this.prune(now)
     if (now - (this.lastSave || 0) >= 15000) {
       this.lastSave = now
-      if (this.sitsDirty) this.persistSits()
+      if (this.sitsDirty) this.persistSits(false)
       this.savePlaces()
     }
     if (now - (this.lastLogSave || 0) >= 60000) { this.lastLogSave = now; idb.set('log', this.log) }
@@ -808,6 +1022,8 @@ class Engine {
       this.bleScan = await navigator.bluetooth.requestLEScan({ acceptAllAdvertisements: true, keepRepeatedDevices: true })
       if (!this.bleListener) {
         this.bleListener = (ev) => {
+          // The listener outlives the scan; ignore adverts that arrive after stop().
+          if (!this.bleScan) return
           const mfg = []
           ev.manufacturerData?.forEach((dv, id) => mfg.push({ companyId: id, dataHex: dvHex(dv) }))
           const svcData = []
@@ -816,6 +1032,7 @@ class Engine {
             kind: 'BLE', mac: ev.device?.id ? pseudoMac(ev.device.id) : '00:00:00:00:00:00', name: ev.name || ev.device?.name || '',
             rssi: ev.rssi ?? -100, mfg, svcData, uuids: ev.uuids || [], vendorIe: [], channel: 0, freq: 2402,
           })
+          if (this.bleQueue.length > QUEUE_CAP) this.bleQueue.splice(0, this.bleQueue.length - QUEUE_CAP)
         }
         navigator.bluetooth.addEventListener('advertisementreceived', this.bleListener)
       }
@@ -840,7 +1057,16 @@ class Engine {
   }
   connectBridge(url) {
     let ws
-    try { ws = new WebSocket(url) } catch { this.bridgeState = 'error'; this.toast(this.t('bridgeFailed'), 'warn'); this.emit(); return }
+    try { ws = new WebSocket(url) } catch (err) {
+      this.bridgeState = 'error'
+      // From the app or an https page, a plain ws:// bridge elsewhere on the LAN is
+      // blocked as mixed content; say so instead of a generic failure.
+      const insecure = err?.name === 'SecurityError' || (typeof location !== 'undefined' && location.protocol === 'https:' && /^ws:/i.test(url) && !LOOPBACK_WS.test(url))
+      const msg = insecure ? this.t('bridgeInsecure') : null
+      this.toast(msg && msg !== 'bridgeInsecure' ? msg : this.t('bridgeFailed'), 'warn')
+      this.emit()
+      return
+    }
     this.bridge = ws
     this.bridgeState = 'connecting'
     ws.onopen = () => { if (this.bridge === ws) { this.bridgeState = 'open'; this.emit() } }
@@ -850,7 +1076,7 @@ class Engine {
       if (msg?.type === 'hello') { this.bridgeInfo = msg; this.emit() }
       else if (msg?.type === 'sightings') {
         this.bridgeQueue.push(...msg.items)
-        if (this.bridgeQueue.length > 5000) this.bridgeQueue.splice(0, this.bridgeQueue.length - 5000)
+        if (this.bridgeQueue.length > QUEUE_CAP) this.bridgeQueue.splice(0, this.bridgeQueue.length - QUEUE_CAP)
       }
     }
     ws.onclose = (ev) => {
@@ -906,12 +1132,27 @@ class Engine {
   exportSettings() {
     return JSON.stringify({ format: 'fieldwatch-web-settings', version: 1, settings: portableSettings(this.settings), named: this.named, watch: [...this.watch] }, null, 1)
   }
+  /** Sanitised settings / named / watch sections of an imported file (null when absent). */
+  importedPrefs(j) {
+    return {
+      settings: isObj(j.settings) ? { ...sanitizeSettings(portableSettings(j.settings), portableSettings(this.settings)), accepted: true } : null,
+      named: isObj(j.named) ? sanitizeNamed(j.named) : null,
+      watch: Array.isArray(j.watch) ? j.watch.filter((x) => typeof x === 'string').slice(0, 5000) : null,
+    }
+  }
+  applyPrefs({ settings, named, watch }) {
+    if (settings) this.set(settings)
+    if (named) { this.named = named; ls.set('named', this.named) }
+    if (watch) { this.watch = new Set(watch); ls.set('watch', [...this.watch]) }
+  }
   importSettings(text) {
     const j = JSON.parse(text)
-    if (j.format !== 'fieldwatch-web-settings') throw new Error('not a Fieldwatch web settings file')
-    if (j.settings && typeof j.settings === 'object') this.set({ ...sanitizeSettings(portableSettings(j.settings), portableSettings(this.settings)), accepted: true })
-    if (j.named && typeof j.named === 'object') { this.named = sanitizeNamed(j.named); ls.set('named', this.named) }
-    if (Array.isArray(j.watch)) { this.watch = new Set(j.watch.filter((x) => typeof x === 'string')); ls.set('watch', [...this.watch]) }
+    if (!isObj(j) || j.format !== 'fieldwatch-web-settings') throw new Error('not a Fieldwatch web settings file')
+    const prefs = this.importedPrefs(j)
+    // An import can change the source, location and more: stop scanning first so a
+    // running scan never continues under settings it wasn't started with.
+    if (this.running) this.stop()
+    this.applyPrefs(prefs)
     this.emit()
   }
   exportAll() {
@@ -923,17 +1164,25 @@ class Engine {
   }
   async importAll(text) {
     const j = JSON.parse(text)
-    if (j.format !== 'fieldwatch-web-backup') throw new Error('not a Fieldwatch backup file')
-    if (j.settings && typeof j.settings === 'object') this.set({ ...sanitizeSettings(portableSettings(j.settings), portableSettings(this.settings)), accepted: true })
-    if (j.named && typeof j.named === 'object') { this.named = sanitizeNamed(j.named); ls.set('named', this.named) }
-    if (Array.isArray(j.watch)) { this.watch = new Set(j.watch.filter((x) => typeof x === 'string')); ls.set('watch', [...this.watch]) }
-    const fleets = Array.isArray(j.fleets) ? j.fleets.map(sanitizeFleet).filter(Boolean) : []
+    if (!isObj(j) || j.format !== 'fieldwatch-web-backup') throw new Error('not a Fieldwatch backup file')
+    // Validate every section before applying any, so a bad section can't leave a half-applied import.
+    const prefs = this.importedPrefs(j)
+    const fleets = Array.isArray(j.fleets) ? [...new Map(j.fleets.map(sanitizeFleet).filter(Boolean).map((f) => [f.id, f])).values()] : []
+    const sits = Array.isArray(j.sits) ? normSits(j.sits) : null
+    const log = Array.isArray(j.log) ? j.log.filter((x) => isObj(x) && fin(x.ts)).slice(-LOG_CAP) : null
+    const places = isObj(j.places) ? sanitizePlaces(j.places) : null
+    // Sits, the log and settings are replaced: stop scanning first (see importSettings).
+    if (this.running) this.stop()
+    this.applyPrefs(prefs)
     if (fleets.length) await this.saveFleets(fleets)
-    if (Array.isArray(j.sits)) { this.sits = j.sits.filter(validSit); await idb.set('sits', this.sits) }
-    if (Array.isArray(j.log)) { this.log = j.log.filter((x) => x && typeof x === 'object').slice(-LOG_CAP); await idb.set('log', this.log) }
-    if (j.places && typeof j.places === 'object') { this.mem = new PlaceMemory(sanitizePlaces(j.places)); await idb.set('places', this.mem.toJSON()) }
-    const open = this.sits.find((s) => !s.end)
-    this.activeSitId = open ? open.id : null
+    if (sits) {
+      this.sits = sits
+      const open = this.sits.find((s) => !s.end)
+      this.activeSitId = open ? open.id : null
+      this.persistSits()
+    }
+    if (log) { this.log = log; await idb.set('log', this.log) }
+    if (places) { this.mem = new PlaceMemory(places); await idb.set('places', this.mem.toJSON()) }
     this.emit()
     return { sits: this.sits.length, log: this.log.length }
   }
@@ -953,22 +1202,122 @@ function sanitizeNamed(named) {
   }
   return out
 }
-const finite = (p) => p && Number.isFinite(p.lat) && Number.isFinite(p.lon)
-function validSit(s) {
-  if (!s || typeof s.id !== 'string' || !Number.isFinite(s.start) || !s.radios || typeof s.radios !== 'object') return false
-  s.name = String(s.name || s.id).slice(0, 80)
-  s.path = Array.isArray(s.path) ? s.path.filter(finite) : []
-  s.floods = Array.isArray(s.floods) ? s.floods : []
-  for (const r of Object.values(s.radios)) r.pts = Array.isArray(r?.pts) ? r.pts.filter(finite) : []
+const round6 = (v) => Math.round(v * 1e6) / 1e6
+const RADIO_KEY = /^(WIFI|BLE):(.+)$/
+
+/**
+ * Keep at most SIT_PTS_CAP points by dropping the one that adds least to the
+ * trail (the smallest detour). The first point (where the device was first heard:
+ * CSV, WiGLE), the strongest (GPX/KML waypoint) and the newest are always kept, so
+ * the spread used for co-travel still covers the whole trail.
+ */
+function thinPts(pts) {
+  let best = 0
+  for (let i = 1; i < pts.length; i++) if (pts[i].rssi > pts[best].rssi) best = i
+  let drop = -1
+  let min = Infinity
+  for (let i = 1; i < pts.length - 1; i++) {
+    if (i === best) continue
+    const detour = distM(pts[i - 1], pts[i]) + distM(pts[i], pts[i + 1]) - distM(pts[i - 1], pts[i + 1])
+    if (detour < min) { min = detour; drop = i }
+  }
+  if (drop > 0) pts.splice(drop, 1)
+}
+
+/** A stamped point with finite coordinates (and, for device points, an RSSI), or null. */
+function normPt(p, t0, rssi) {
+  if (!isObj(p) || !fin(p.lat) || !fin(p.lon) || Math.abs(p.lat) > 90 || Math.abs(p.lon) > 180) return null
+  const out = { lat: p.lat, lon: p.lon, t: fin(p.t) ? p.t : t0 }
+  if (rssi !== undefined) out.rssi = fin(p.rssi) ? p.rssi : rssi
+  return out
+}
+
+/** One sit device entry, rebuilt with every field the reports read, or null. */
+function normSitRadio(key, e, start) {
+  const m = RADIO_KEY.exec(key)
+  if (!m || !isObj(e)) return null
+  const first = fin(e.first) ? e.first : start
+  const maxRssi = fin(e.maxRssi) ? e.maxRssi : -100
+  const out = {
+    key, kind: m[1], mac: str(e.mac, 64) || m[2].slice(0, 64), name: str(e.name, 256), vendor: typeof e.vendor === 'string' ? e.vendor.slice(0, 128) : null,
+    first, last: fin(e.last) ? e.last : first, maxRssi, minRssi: fin(e.minRssi) ? e.minRssi : maxRssi,
+    sum: fin(e.sum) ? e.sum : 0, count: Number.isInteger(e.count) && e.count >= 0 ? e.count : 0, channel: fin(e.channel) ? e.channel : 0,
+    fleetIds: Array.isArray(e.fleetIds) ? e.fleetIds.filter((x) => typeof x === 'string').slice(0, 64) : [],
+    pts: Array.isArray(e.pts) ? e.pts.map((p) => normPt(p, first, maxRssi)).filter(Boolean).slice(0, SIT_PTS_IMPORT_CAP) : [],
+  }
+  if (typeof e.security === 'string' && e.security) out.security = e.security.slice(0, 64)
+  if (e.mine === true) out.mine = true
+  if (e.flood === true) out.flood = true
+  return out
+}
+
+/** A sit from a backup or storage, rebuilt so every report and export can read it, or null. */
+function normSit(s) {
+  if (!isObj(s) || typeof s.id !== 'string' || !s.id || !fin(s.start) || !isObj(s.radios)) return null
+  const radios = {}
+  for (const [k, e] of Object.entries(s.radios)) {
+    const r = normSitRadio(k, e, s.start)
+    if (r) radios[k] = r
+  }
+  const out = {
+    id: s.id.slice(0, 80), name: String(s.name || s.id).slice(0, 80), start: s.start, end: fin(s.end) ? s.end : null,
+    path: Array.isArray(s.path) ? s.path.map((p) => normPt(p, s.start)).filter(Boolean) : [],
+    radios,
+    floods: Array.isArray(s.floods) ? s.floods.filter(isObj).map((f) => ({ t: fin(f.t) ? f.t : s.start, n: fin(f.n) ? f.n : 0, kind: str(f.kind, 32) || 'pairing' })) : [],
+  }
+  if (SOURCES.includes(s.source)) out.source = s.source
+  if (Number.isInteger(s.dropped) && s.dropped > 0) out.dropped = s.dropped
+  return out
+}
+const ptOk = (p) => isObj(p) && fin(p.lat) && fin(p.lon) && fin(p.t)
+/** Cheap check (no allocation) that a stored sit already has the shape normSit produces. */
+function sitOk(s) {
+  if (!isObj(s) || typeof s.id !== 'string' || !s.id || typeof s.name !== 'string' || !fin(s.start) || !(s.end === null || fin(s.end))) return false
+  if (!isObj(s.radios) || !Array.isArray(s.path) || !s.path.every(ptOk) || !Array.isArray(s.floods) || !s.floods.every(isObj)) return false
+  for (const k in s.radios) {
+    const e = s.radios[k]
+    if (!RADIO_KEY.test(k) || !isObj(e) || e.key !== k || typeof e.mac !== 'string' || typeof e.name !== 'string' || !fin(e.first) || !fin(e.last)) return false
+    if (!fin(e.maxRssi) || !fin(e.minRssi) || !fin(e.sum) || !fin(e.count) || !Array.isArray(e.fleetIds) || !e.fleetIds.every((x) => typeof x === 'string')) return false
+    if (!Array.isArray(e.pts) || !e.pts.every((p) => ptOk(p) && fin(p.rssi))) return false
+  }
   return true
 }
+/**
+ * Normalised sits, first one per id. With `trusted` (sits from this device's
+ * storage) sits that already have the right shape are kept as they are.
+ */
+function normSits(list, trusted = false) {
+  const seen = new Set()
+  const out = []
+  for (const raw of list) {
+    const s = trusted && sitOk(raw) ? raw : normSit(raw)
+    if (s && !seen.has(s.id)) { seen.add(s.id); out.push(s) }
+  }
+  return out
+}
+/** Stored sits plus the separately saved running sit (newer than any copy in `sits`). */
+function mergeActiveSit(stored, active) {
+  const sits = Array.isArray(stored) ? [...stored] : []
+  if (isObj(active) && typeof active.id === 'string') {
+    const i = sits.findIndex((s) => s?.id === active.id)
+    if (i >= 0) sits[i] = active
+    else {
+      const at = sits.findIndex((s) => !(s?.start >= active.start))
+      sits.splice(at < 0 ? sits.length : at, 0, active)
+    }
+  }
+  return normSits(sits, true)
+}
+
+const CELL_KEY = /^(-?\d+:-?\d+|here)$/
 function sanitizePlaces(p) {
   const devices = {}
-  for (const [k, d] of Object.entries(p.devices || {})) {
-    if (!d || typeof d !== 'object' || !d.cells || typeof d.cells !== 'object') continue
+  for (const [k, d] of Object.entries(isObj(p.devices) ? p.devices : {})) {
+    // Keys come from the file: accept only what memoryKey() produces ("KIND:MAC").
+    if (!RADIO_KEY.test(k) || !isObj(d) || !isObj(d.cells)) continue
     const cells = {}
-    for (const [c, v] of Object.entries(d.cells)) if (v && Array.isArray(v.days)) cells[c] = { first: Number(v.first) || 0, last: Number(v.last) || 0, days: v.days.filter((x) => typeof x === 'string').slice(-7), ...(v.learned ? { learned: true } : {}) }
-    devices[k] = { kind: d.kind === 'WIFI' ? 'WIFI' : 'BLE', name: typeof d.name === 'string' ? d.name.slice(0, 64) : '', mac: typeof d.mac === 'string' ? d.mac.slice(0, 17) : '', cls: typeof d.cls === 'string' ? d.cls : null, last: Number(d.last) || 0, cells }
+    for (const [c, v] of Object.entries(d.cells)) if (CELL_KEY.test(c) && isObj(v) && Array.isArray(v.days)) cells[c] = { first: Number(v.first) || 0, last: Number(v.last) || 0, days: v.days.filter((x) => typeof x === 'string').slice(-7), ...(v.learned ? { learned: true } : {}) }
+    devices[k] = { kind: d.kind === 'WIFI' ? 'WIFI' : 'BLE', name: typeof d.name === 'string' ? d.name.slice(0, 64) : '', mac: typeof d.mac === 'string' ? d.mac.slice(0, 17) : '', cls: typeof d.cls === 'string' && FLEET_KINDS.has(d.cls) ? d.cls : null, last: Number(d.last) || 0, cells }
   }
   return { devices }
 }
@@ -1013,30 +1362,40 @@ function splitCsv(line) {
   return out
 }
 
+// Log fields from an untrusted file: a list may come as 'A|B' text or as an array.
+const strList = (v, sep) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string') : typeof v === 'string' ? v.split(sep) : []).filter(Boolean).slice(0, 32)
+const coord = (v, max) => {
+  const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() ? Number(v) : NaN
+  return Number.isFinite(n) && Math.abs(n) <= max ? n : null
+}
+const num0 = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0)
+
 /** Parse a Fieldwatch log (CSV with the Android header, or JSONL). */
 export function parseLog(text) {
-  const lines = text.split(/\r?\n/).filter((l) => l.trim())
+  const lines = String(text).split(/\r?\n/).filter((l) => l.trim())
   const rows = []
   let header = LOG_HEADER
   for (const line of lines) {
     let o
     if (line.trim().startsWith('{')) {
       try { o = JSON.parse(line) } catch { continue }
-      o = { ts: Number(o.ts), kind: o.kind, mac: o.mac, name: o.name || '', rssi: Number(o.rssi), channel: Number(o.channel) || 0, freq: Number(o.freq) || 0, mfgId: typeof o.mfg === 'string' ? (o.mfg ? parseInt(o.mfg, 16) : null) : (Number.isFinite(o.mfg) ? o.mfg : null), raw: o.raw, rand: !!o.rand, uuids: String(o.uuids || '').split(/[,|]/).filter(Boolean), lat: o.lat, lon: o.lon, vendorIe: String(o.vendor_ie || '').split('|').filter(Boolean), hidden: !!o.hidden }
+      if (!isObj(o)) continue
+      // JSON can carry any type: coerce every field so a row can't crash ingest.
+      o = { ts: Number(o.ts), kind: o.kind, mac: str(o.mac, 64), name: str(o.name, 256), rssi: Number(o.rssi), channel: num0(o.channel), freq: num0(o.freq), mfgId: typeof o.mfg === 'string' ? (o.mfg ? parseInt(o.mfg, 16) : null) : (Number.isInteger(o.mfg) ? o.mfg : null), raw: str(o.raw, 512), rand: !!o.rand, uuids: strList(o.uuids, /[,|]/), lat: o.lat, lon: o.lon, vendorIe: strList(o.vendor_ie, '|'), hidden: !!o.hidden }
     } else {
       const c = splitCsv(line)
       if (c[0] === 'timestamp' || c.includes('kind') && c.includes('mac')) { header = c; continue }
       const g = (k) => c[header.indexOf(k)] ?? ''
       const mfgHex = g('mfg')
-      o = { ts: Number(g('timestamp')), kind: g('kind'), mac: g('mac'), name: g('name').replace(/^'/, ''), rssi: Number(g('rssi')), channel: Number(g('channel')) || 0, freq: Number(g('freq')) || 0, mfgId: mfgHex ? parseInt(mfgHex, 16) : null, raw: g('raw'), uuids: g('uuids').split('|').filter(Boolean), lat: g('lat') ? Number(g('lat')) : null, lon: g('lon') ? Number(g('lon')) : null, vendorIe: g('vendor_ie').split('|').filter(Boolean), hidden: g('flags').includes('HIDDEN'), rand: g('flags').includes('RAND') || g('rand') === 'true' }
+      o = { ts: Number(g('timestamp')), kind: g('kind'), mac: g('mac'), name: g('name').replace(/^'/, '').slice(0, 256), rssi: Number(g('rssi')), channel: num0(g('channel')), freq: num0(g('freq')), mfgId: mfgHex ? parseInt(mfgHex, 16) : null, raw: g('raw').slice(0, 512), uuids: strList(g('uuids'), '|'), lat: g('lat'), lon: g('lon'), vendorIe: strList(g('vendor_ie'), '|'), hidden: g('flags').includes('HIDDEN'), rand: g('flags').includes('RAND') || g('rand') === 'true' }
     }
-    if (!o.ts || (o.kind !== 'WIFI' && o.kind !== 'BLE') || !o.mac) continue
+    // A row needs a time, a radio kind and a 6-byte address.
+    if (!Number.isFinite(o.ts) || o.ts <= 0 || (o.kind !== 'WIFI' && o.kind !== 'BLE') || hexOnly(o.mac).length !== 12) continue
     rows.push({
       ts: o.ts, kind: o.kind, mac: o.mac, name: o.name, hidden: o.hidden, rssi: Number.isFinite(o.rssi) ? o.rssi : -100, channel: o.channel, freq: o.freq,
       mfg: o.mfgId != null && !Number.isNaN(o.mfgId) ? [{ companyId: o.mfgId, dataHex: hexOnly(o.raw) }] : [],
       uuids: o.uuids, svcData: [], vendorIe: o.vendorIe,
-      lat: Number.isFinite(Number(o.lat)) && o.lat !== null && o.lat !== '' ? Number(o.lat) : null,
-      lon: Number.isFinite(Number(o.lon)) && o.lon !== null && o.lon !== '' ? Number(o.lon) : null,
+      lat: coord(o.lat, 90), lon: coord(o.lon, 180),
       ...(o.kind === 'BLE' && o.rand ? { addrType: 'random' } : {}),
     })
   }

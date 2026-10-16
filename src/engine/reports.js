@@ -1,6 +1,6 @@
 // Debrief / compare / exports for sits and the log.
 import { csvCell, xmlEsc, distM, spreadM, maskMac } from './geo.js'
-import { LOG_HEADER } from './engine.js'
+import { LOG_HEADER, APP_VERSION } from './engine.js'
 
 export function sitRadios(sit) {
   return Object.values(sit.radios).filter((r) => !r.flood)
@@ -37,6 +37,8 @@ export function debrief(sit, engine) {
     byChannel: Object.entries(byChannel).sort((a, b) => Number(a[0]) - Number(b[0])),
     attention, coTravel: coTravel.sort((a, b) => b.spread - a.spread), mine,
     duration: (sit.end || Date.now()) - sit.start, pathLen, fleetName,
+    // Devices heard after the sit was full and not recorded (trackers and other priority devices always are).
+    dropped: sit.dropped || 0,
   }
 }
 
@@ -82,7 +84,7 @@ export function sitKml(sit, engine) {
 }
 
 export function sitWigle(sit) {
-  const head = 'WigleWifi-1.4,appRelease=fieldwatch-web-1.0.0,model=browser,release=web,device=browser,display=web,board=web,brand=fieldwatch'
+  const head = `WigleWifi-1.4,appRelease=fieldwatch-web-${APP_VERSION},model=browser,release=web,device=browser,display=web,board=web,brand=fieldwatch`
   const cols = 'MAC,SSID,AuthMode,FirstSeen,Channel,RSSI,CurrentLatitude,CurrentLongitude,AltitudeMeters,AccuracyMeters,Type'
   const rows = Object.values(sit.radios).filter((r) => r.pts.length).map((r) => {
     const p = r.pts[0]
@@ -108,6 +110,7 @@ export function aiPrompt(sit, engine, privacy) {
   lines.push(`Sit: ${sit.name}`)
   lines.push(`Window: ${iso(sit.start)} → ${sit.end ? iso(sit.end) : 'running'} (${Math.round(d.duration / 60000)} min), path ≈ ${Math.round(d.pathLen)} m`)
   lines.push(`Radios: ${d.total} (Wi-Fi ${d.wifi}, BLE ${d.ble}), matched ${d.matched}. Floods: ${d.floods.length} (${d.floodHidden} addresses set aside).`)
+  if (d.dropped) lines.push(`The sit was full: about ${d.dropped} more ordinary devices were heard but not recorded (trackers, Extra attention and watched devices still were).`)
   lines.push('')
   lines.push('By class: ' + d.byClass.map(([c, n]) => `${c} ${n}`).join(', '))
   lines.push('Top signatures: ' + d.bySig.map(([s, n]) => `${s} ${n}`).join(', '))
